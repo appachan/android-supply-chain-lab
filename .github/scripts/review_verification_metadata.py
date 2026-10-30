@@ -41,13 +41,15 @@ def ignored_keys(root):
 
 
 def checksums(root):
-    """Map (component, artifact, kind) to its accepted values and rejection-free reason."""
+    """Map (component, artifact, kind) to its accepted values and generation reason."""
     result = {}
     for component in root.iter(f"{NS}component"):
         coordinates = ":".join(component.get(key) for key in ("group", "name", "version"))
         for artifact in component.findall(f"{NS}artifact"):
             for entry in artifact:
                 kind = entry.tag.removeprefix(NS)
+                if kind == "ignored-keys":
+                    continue
                 values = [entry.get("value")]
                 values += [also.get("value") for also in entry.findall(f"{NS}also-trust")]
                 result[(coordinates, artifact.get("name"), kind)] = (values, entry.get("reason"))
@@ -66,7 +68,11 @@ def key_owners(keyring):
 
 
 def is_signed_group(group, keys):
-    return any(key_scope.split(":")[0] == group for _, key_scope in keys)
+    for _, key_scope in keys:
+        pattern, _, _ = key_scope.removesuffix(" (regex)").partition(":")
+        if group == pattern or (key_scope.endswith(" (regex)") and re.fullmatch(pattern, group)):
+            return True
+    return False
 
 
 def main(old_path, new_path, keyring_path):
@@ -83,6 +89,10 @@ def main(old_path, new_path, keyring_path):
             problems.append(f"Entry removed: `{' '.join(key)}`")
         elif not set(new_checksums[key][0]) <= set(values):
             problems.append(f"Accepted values changed: `{' '.join(key)}`")
+
+    for key_id, reason in sorted(ignored_keys(new) - ignored_keys(old)):
+        if reason == "PGP verification failed":
+            problems.append(f"Signature verification failed with trusted key `{key_id}`")
 
     new_keys = sorted(trusted_keys(new) - trusted_keys(old))
     owners = key_owners(keyring_path)

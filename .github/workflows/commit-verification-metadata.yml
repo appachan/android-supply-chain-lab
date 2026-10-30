@@ -62,6 +62,7 @@ jobs:
             | tee "$RUNNER_TEMP/review.md" >> "$GITHUB_STEP_SUMMARY"
 
       # API 経由のコミットは GitHub が署名する。expectedHeadOid で再生成後に更新されたブランチへの書き込みを防ぐ
+      # [dependabot skip] がないと、Dependabot はこのコミットのある PR を rebase しなくなる
       - name: Commit through the API
         if: steps.compare.outputs.changed == 'true'
         run: |
@@ -74,7 +75,7 @@ jobs:
             '{query: $query, variables: {input: {
               branch: {repositoryNameWithOwner: $repo, branchName: env.HEAD_BRANCH},
               expectedHeadOid: env.HEAD_SHA,
-              message: {headline: ":lock: Regenerate dependency verification metadata", body: $body},
+              message: {headline: ":lock: Regenerate dependency verification metadata", body: ($body + "\n[dependabot skip]")},
               fileChanges: {additions: [
                 {path: "gradle/verification-metadata.xml", contents: $metadata},
                 {path: "gradle/verification-keyring.keys", contents: $keyring}

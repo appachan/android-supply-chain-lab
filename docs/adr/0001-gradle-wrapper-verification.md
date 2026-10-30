@@ -88,7 +88,7 @@ wrapper validation Action が守らないもの:
 
 ## Dependabot による更新
 
-Dependabot は `package-ecosystem: gradle` で wrapper を更新できる。`dependabot.yml` の設定と運用はテーマ 2 で扱い、このリポジトリではまだ動かしていない。ここに書く内容は公式の情報と他のリポジトリの実例による。
+Dependabot は `package-ecosystem: gradle` で wrapper を更新できる。`dependabot.yml` の設定と運用は [ADR-0002](0002-dependency-verification.md) で扱う。ここに書く内容は公式の情報と他のリポジトリの実例による。このリポジトリの [PR #3](https://github.com/appachan/android-supply-chain-lab/pull/3) でも、9.8.2 への更新で `distributionSha256Sum` と `gradle-wrapper.jar` が公式の値に更新された。
 
 - [GitHub Docs](https://docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories) には、Dependabot が Gradle を実行して `gradle/wrapper/gradle-wrapper.properties`、`gradlew`、`gradlew.bat`、`gradle/wrapper/gradle-wrapper.jar` を更新すると書かれている
 - 同じページに `distributionSha256Sum` への言及はないが、[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_parser/distributions_finder.rb)は更新の対象にしている。`distributionSha256Sum` がある場合に限り、新しい値を `gradle-distribution-sha256-sum` として [wrapper タスクに渡す](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_updater/wrapper/command_builder.rb)。設定がなければ追加しない

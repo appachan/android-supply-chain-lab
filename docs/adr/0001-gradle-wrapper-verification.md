@@ -123,6 +123,23 @@ Actual checksum:   'acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804
 
 `distributionSha256Sum` の値は `https://services.gradle.org/distributions/gradle-9.7.1-bin.zip.sha256`、`gradle-wrapper.jar` の値は `https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256` と一致することを確認した。
 
+GitHub Actions では、一時ブランチに確認用の変更を push して確認した。ブランチは確認後に削除した。
+
+| 条件 | wrapper validation | 実行 |
+| --- | --- | --- |
+| `gradle-wrapper.jar` の末尾に 1 byte 追加 | 失敗。JDK のセットアップとビルドの step はスキップ | [run 41065550996](https://github.com/appachan/android-supply-chain-lab/actions/runs/41065550996) |
+| 9.8.2 の公式の `gradle-wrapper.jar` に差し替え（`distributionUrl` は 9.7.1 のまま）、`gradlew` にコメントを追加 | 成功。ビルドも成功 | [run 41065666800](https://github.com/appachan/android-supply-chain-lab/actions/runs/41065666800) |
+
+2 つ目の結果は、版の不一致と `gradlew` の変更を Action が検知しないことを示している。
+
+```text
+##[error]At least one Gradle Wrapper Jar failed validation!
+✗ Found unknown Gradle Wrapper JAR files:
+  da9f6ba5070e87b7abe25b56e5f6d004883a5399cefb8cc6512e2f53fe10b8c3 gradle/wrapper/gradle-wrapper.jar
+```
+
+main の CI のログでは、ビルドの step が毎回 `gradle-9.7.1-bin.zip` をダウンロードしていて、`distributionSha256Sum` の検証が実行される状態になっている。ただし、値を壊したときの失敗を確認したのはローカルだけで、CI では確認していない。
+
 ## Consequences
 
 - 配布物と `gradle-wrapper.jar` の検証が CI で毎回実行される

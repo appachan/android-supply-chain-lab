@@ -1,0 +1,30 @@
+[versions]
+# Android SDK / build targets
+compileSdk = "37"
+minSdk = "29"
+targetSdk = "36"
+
+# Build tooling
+androidGradlePlugin = "9.3.3"
+kotlin = "2.4.21"
+
+# Libraries
+androidxActivity = "1.13.0"
+androidxComposeBom = "2026.09.00"
+junit4 = "4.13.2"
+
+[libraries]
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
+
+# AndroidX Compose (BOM-managed)
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "androidxComposeBom" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+
+# Testing
+junit4 = { module = "junit:junit", version.ref = "junit4" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

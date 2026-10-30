@@ -105,6 +105,7 @@
          <trusted-key id="FF6E2C001948C5F2F38B0CC385911F425EC61B51">
             <trusting group="junit"/>
             <trusting group="org.junit"/>
+            <!-- conflict probe: remove after observing Dependabot -->
          </trusted-key>
       </trusted-keys>
    </configuration>

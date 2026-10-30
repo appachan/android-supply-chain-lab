@@ -11,7 +11,7 @@ Android アプリのサプライチェーンリスクに対する理想の運用
 3. version catalog の指定と推移的依存のバージョンのズレの検知と固定
 4. private ライブラリを GitHub Packages の Maven で配信するときの完全性の検証と provenance
 
-テーマ 1 の判断と検証結果は [ADR-0001](docs/adr/0001-gradle-wrapper-verification.md) にまとめている。
+テーマ 1 の判断と検証結果は [ADR-0001](docs/adr/0001-gradle-wrapper-verification.md)、テーマ 3 は [ADR-0003](docs/adr/0003-version-resolution.md) にまとめている。
 
 ## 構成
 
@@ -36,3 +36,5 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 ```sh
 ./gradlew build
 ```
+
+`build` は `checkResolvedVersions` を含み、`gradle/libs.versions.toml` の宣言と解決結果がズレていると失敗する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。

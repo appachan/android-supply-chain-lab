@@ -29,7 +29,7 @@ Accepted
 4. `strictly`、`enforcedPlatform` は常用しない。推移的依存を上げる必要があるときは、catalog の項目と `constraints` を使う
 5. ズレを検知したら、原因を確認して catalog を解決結果に合わせて上げる。上げても解決結果は変わらない。合わせられない理由があるときだけ固定を検討する
 
-locking を採用しない主な理由は 3 つある。Dependabot が `buildscript-gradle.lockfile` を更新しないので AGP や Kotlin の更新 PR の CI が必ず失敗すること、catalog より高い lock は黙って catalog を上書きすること、`failOnDynamicVersions` と併用できないことである。推移的依存の変化を PR で見る役割はテーマ 2 の `verification-metadata.xml` が担う（[論点 5](#論点-5-verification-metadataxml-との相互作用)）。この前提が崩れたら locking を再検討する。
+locking を採用しない主な理由は 3 つある。Dependabot が `buildscript-gradle.lockfile` を更新しないので AGP や Kotlin の更新 PR の CI が必ず失敗すること、catalog より高い lock は黙って catalog を上書きすること、`failOnDynamicVersions` と併用できないことである。推移的依存の変化を PR で見る役割は、テーマ 2 で main に入った `verification-metadata.xml` が担う（[論点 5](#論点-5-verification-metadataxml-との相互作用)）。この前提が崩れたら locking を再検討する。
 
 ## 論点 1: 再現
 
@@ -268,7 +268,7 @@ Dependabot の lockfile の更新が失敗しても、[エラーを log に出�
 - 同じ `version.ref` を共有する項目は 1 行の変更で揃うが、別の `[versions]` の項目が連動して上がる場合は PR が分かれて、片方の CI が失敗する。`dependabot.yml` の `groups` で束ねられる可能性があるが、テーマ 2 の範囲なので確認していない
 - Dependabot の wrapper の更新は build file を[空にして実行する](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_updater/wrapper_updater.rb#L224-L232)ので、`apply(from = ...)` は影響しない
 
-未確認の点（テーマ 2 で確認する）:
+未確認の点:
 
 - 実際の Dependabot の PR で上の動作になるか
 - `groups` で連動する更新を束ねられるか
@@ -278,22 +278,26 @@ Dependabot の security updates は Gradle では dependency submission API の�
 
 ## 論点 5: verification-metadata.xml との相互作用
 
-`verification-metadata.xml` はこのブランチでは変更していない。一時的な clone の中で生成して確認した。
+`verification-metadata.xml` はこのブランチでは変更していない。テーマ 2 は作業中に main へ入った（b13cccb）。このブランチの d8b7f5f と main を一時的な clone で merge すると競合はなく、`./gradlew build` は 97 タスクで成功した。下の表の上 3 行は `sha256` で生成した clone の結果で、下 3 行は merge した clone の結果である。
 
 | 確認 | 結果 |
 | --- | --- |
 | `--write-verification-metadata sha256 build` で生成し、`checkResolvedVersions build` を実行 | 成功。448 component |
 | `checkResolvedVersions` を除いて生成し、検査を実行 | 成功。component 数も同じ 448。[生成は全 configuration を解決する](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html)ので、検査の追加で記録すべきものは増えない |
 | 生成後に `tracing` を `strictly("1.0.0")` に固定して `compileDebugKotlin` | 失敗。`tracing-1.0.0.aar` と `annotation-1.1.0.pom` が未記録 |
-| 生成後に catalog の `activity` を未記録の 1.12.4 に変更して `checkResolvedVersions` | 成功。検査はグラフだけを解決するので、検証が実行されない |
+| catalog の `activity` を未記録の 1.12.4 に変更して `checkResolvedVersions` | 成功。検査はグラフだけを解決するので、検証が実行されない。続く `build` は `Dependency verification failed` で失敗 |
+| 同じ変更で `--write-verification-metadata pgp,sha256 --export-keys build`（main の再生成ジョブのコマンド） | 成功。`verification-metadata.xml` が 11 行増え、続く `build` も成功 |
+| ズレのある変更（S1）で同じコマンド | 失敗（exit 1）。検査がズレを報告する。手元では `verification-metadata.xml` は更新されていた |
 
 統合で注意する点:
 
 - 検査の成功は検証の成功を意味しない。検査の後に成果物を解決する `build` で検証が実行される。CI で `checkResolvedVersions` だけを実行する構成にしない
 - 解決結果を変える方式（`strictly`、`enforcedPlatform`、`constraints`、locking の lock 更新）を使うと `verification-metadata.xml` の更新が必要になる。catalog を解決結果に合わせるだけの修正では解決結果が変わらないので、更新は不要
 - 低い版への固定は、`verification-metadata.xml` に古い版が記録されていると検証を通る。`tracing` の 1.0.0 と 1.2.0 を記録した状態で 1.0.0 に固定すると成功した。検証は版の妥当性を判断しない
-- 依存の更新 PR で推移的依存の変化が見えるのは `verification-metadata.xml` の diff である。この前提で locking を不採用にしている。テーマ 2 が `verification-metadata.xml` を採用しない場合は locking を再検討する
-- Dependabot が `verification-metadata.xml` を更新する実装は dependabot-core の Gradle の `lib` に見当たらなかった（`verification-metadata` の検索で 0 件）。動作はテーマ 2 で確認する
+- 依存の更新 PR で推移的依存の変化が見えるのは `verification-metadata.xml` の diff である。この前提で locking を不採用にしている。`verification-metadata.xml` をやめるときは locking を再検討する
+- main の `regenerate-verification-metadata.yml` は `build` を実行するので、merge すると検査も含まれる。ズレのある Dependabot PR では再生成のコマンドが失敗し、後続の `upload-artifact` の step は実行されないはずである。人が catalog を直すと PR の更新で再度動く想定だが、Actions の上では確認していない
+- 再生成とズレの検知を分けたい場合は、再生成のコマンドに `-x checkResolvedVersions` を足せばよい。検査を除いても記録される component は同じ（448）で、ズレは通常の CI で検知される。ファイルはテーマ 2 の範囲なので、このブランチでは変更していない
+- Dependabot 自身が `verification-metadata.xml` を更新する実装は dependabot-core の Gradle の `lib` に見当たらなかった（`verification-metadata` の検索で 0 件）。main の再生成ジョブはこれを補うものである
 
 ## 運用手順
 
@@ -395,6 +399,14 @@ plugin の classpath のズレ（S3）:
 ```
 
 どちらも `./gradlew checkResolvedVersions` が失敗する。
+
+GitHub Actions では、`ci.yml` の trigger に一時ブランチを足すコミットを d8b7f5f の上に載せて確認した。ブランチは確認後に削除した。`ci.yml` は変更していない。`build` が検査を含むからである。
+
+| 条件 | 結果 | 実行 |
+| --- | --- | --- |
+| ズレなし | 成功。`:checkResolvedVersions` と `:app:checkResolvedVersions` が実行された | [run 41075091703](https://github.com/appachan/android-supply-chain-lab/actions/runs/41075091703) |
+| S1 | 失敗。`:app:checkResolvedVersions FAILED`、`androidx.core:core-ktx: declared 1.13.1, resolved 1.18.0` | [run 41075099381](https://github.com/appachan/android-supply-chain-lab/actions/runs/41075099381) |
+| S3 | 失敗。`:checkResolvedVersions FAILED`、`compose-compiler-gradle-plugin: requested 2.2.0 ..., resolved 2.2.10` | [run 41075106953](https://github.com/appachan/android-supply-chain-lab/actions/runs/41075106953) |
 
 ## Consequences
 

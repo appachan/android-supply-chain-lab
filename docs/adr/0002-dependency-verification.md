@@ -247,6 +247,43 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict モー
 
 2 回で揃う保証はない。最終的な判定は空の環境の `verify` であり、欠けていれば失敗する側に倒れる。`verify` が `.pom` で失敗し、`from repository` が親の配布元と違うときは、配布元の `.asc` で署名を確認してから、その POM の sha256 を metadata に手で足す。
 
+### repository の content フィルタでは 1 回にならない
+
+`bc-jdk18on-bom` を Maven Central だけから取得すれば再生成が 1 回で済むかを試した。結論として、1 回にはならない。AGP 9.5.0 への更新を空の環境で 1 回再生成し、別の空の環境の検証で判定した。
+
+| `settings.gradle.kts` と `build-logic/settings.gradle.kts` の設定 | metadata の追加行 | 別の空の環境の検証 |
+| --- | --- | --- |
+| 現在の設定 | 2 | 失敗（`bc-jdk18on-bom-1.80.2.pom ... from repository Google`） |
+| `exclusiveContent` で `org.bouncycastle` の group を Maven Central に限定 | 2 | 同じ失敗 |
+| `exclusiveContent` で `org.bouncycastle:bc-jdk18on-bom` を Maven Central に限定 | 2 | 同じ失敗 |
+
+対照として、再生成 2 回は同じ更新で追加 7 行になり、検証は成功した。
+
+親 POM の解決に content フィルタは効く。[`ExternalModuleComponentResolverFactory`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/ExternalModuleComponentResolverFactory.java#L168-L172) は `filterRepository` の後のリポジトリを `parentModuleResolver` に登録している。
+
+それでも解決しないのは、問題が取得元ではなく検証の経路にあるからである。同じコードで検証のラッパーはフィルタの外側に置かれる。`sdk-common` を解決した Google のラッパーは、`sources` に入った親と BOM の POM も Google の名前で検証し、`.asc` を Google に探す。`bc-jdk18on-bom` は最初から Maven Central からしか取得されておらず、Google の `content` の対象外である。フィルタを足しても、子が Google にある限り変わらない。
+
+`exclusiveContent` は dependency confusion の対策としては別の問題である。この実験は再生成の回数しか見ていないので、対策としての効果は評価していない。lab の依存はすべて公開リポジトリにあるので、今は導入しない。private のライブラリを扱うテーマ 4 で評価する。`verify-metadata` を `false` にする案は不採用のままである。
+
+### 人が依存を足すときの再生成
+
+okhttp 4.12.0 を `:app` の `implementation` に足して比べた。検証はそれぞれ別の空の環境で行った。普段の環境は既存のキャッシュ（1.7 GB、okhttp 4.12.0 を含む）のある `~/.gradle` である。
+
+| `GRADLE_USER_HOME` | 再生成の回数 | metadata の追加行 | keyring の追加行 | lockfile | 検証 |
+| --- | --- | --- | --- | --- | --- |
+| 空 | 1 | 1 | 17 | 下の差分 | 成功 |
+| 空 | 2 | 1（1 回目と同一） | 17 | 同じ | 成功 |
+| 普段の環境 | 1 | 45 | 17 | 空の環境と同一 | 成功 |
+| 普段の環境 | 2 | 45（1 回目と同一） | 17 | 同じ | 成功 |
+
+- metadata の必要な 1 行は `com.squareup` の group を鍵 `DBD744ACE7ADE6AA50DD591F66B50994442D2D40` で信頼する行である。再生成が group の単位にまとめるので、信頼の範囲が `com.squareup` 全体になることを人が確認する
+- lockfile は `okhttp`、`okio`、`okio-jvm` のほか、`kotlin-stdlib-common`、`kotlin-stdlib-jdk7`、`kotlin-stdlib-jdk8` の行が増える
+- 普段の環境の 44 行は不要である。空の環境の結果で検証が通るので、なくても成功する。`guava-parent`、`netty-parent`、`httpcomponents-parent`、`junit-bom` など、今回の依存と関係のない POM のハッシュで、ほかのビルドのキャッシュが混ざったと見られる。検証は通るので、CI では気づけない。これらは最初の利用の信頼（Trust on first use）の行なので、残すとレビューの量と信頼の範囲が増える
+
+結論として、人の手順にも空の `GRADLE_USER_HOME` と 2 回の実行が必要である。空の環境は不要な行を入れないために必要である。2 回の実行は okhttp では不要だったが、AGP 9.5.0 の更新では必要で、人は事前に見分けられない。2 回目は変更がなければ短い（okhttp で 12 秒）ので、常に 2 回実行する。
+
+運用手順のコマンドは、1 回目が失敗したら止まるように `&&` でつなぎ、一時的な環境のデーモンを止めて消す形に直した。AGP 9.5.0 の更新で実行し、別の空の環境の検証の成功を確認した。
+
 ## 検証の対象
 
 公式の説明は Gradle 9.7.1 のドキュメントによる。
@@ -562,10 +599,10 @@ Dependabot の PR の確認:
 手元で metadata を変更するとき（依存を手で追加したときなど）:
 
 ```sh
-GRADLE_USER_HOME="$(mktemp -d)" sh -c '
+sh -c 'export GRADLE_USER_HOME="$(mktemp -d)" &&
+  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build &&
   ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
-  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
-'
+  status=$?; ./gradlew --stop; rm -rf "$GRADLE_USER_HOME"; exit $status'
 ```
 
 `ignored-key` が出たら、鍵の取得の一時的な失敗か確認する。残すと該当の成果物はハッシュで検証される。鍵を入れるなら再生成をやり直すか、手元で再生成する。`verify` が `Key servers are disabled` で失敗したら、keyring に鍵が入っていないので同じように直す。

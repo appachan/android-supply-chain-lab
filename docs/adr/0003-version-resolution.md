@@ -802,10 +802,10 @@ rss-reader のコピー（227fb9c）で、必要な制約の数を数えた。
 2. 問題がなければ lock と metadata を更新して、差分をコミットする。`-x test` などで範囲を狭めない。解決されなかった configuration の行が古いまま残る
 
    ```sh
-   GRADLE_USER_HOME="$(mktemp -d)" sh -c '
+   sh -c 'export GRADLE_USER_HOME="$(mktemp -d)" &&
+     ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build &&
      ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
-     ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
-   '
+     status=$?; ./gradlew --stop; rm -rf "$GRADLE_USER_HOME"; exit $status'
    ```
 
 3. 問題があれば、更新を見送るか、`reject` で止める

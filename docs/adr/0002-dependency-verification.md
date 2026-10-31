@@ -276,6 +276,20 @@ Gradle 9.7.1 の dependency-management の jar に計測のログを足した配
 
 `.module` の有無と実物の結果の違いの説明は残っている。最小の再現の `.module` ありの BOM では 2 回目に揃わないが、lab の実物は同じ BOM で揃う。
 
+### sha256 だけの方式
+
+`verify-signatures` を `false` にし、`trusted-keys`、`ignored-keys`、`components` を消した状態から、空の環境で `--write-verification-metadata sha256 --write-locks build` を 1 回だけ実行した。
+
+| 確認 | `sha256` だけ | 現在の `pgp,sha256` |
+| --- | --- | --- |
+| 必要な再生成 | 1 回。2 回目の差分は 0 行 | 2 回 |
+| main の依存の metadata | 4,017 行、574 component、950 ハッシュ | 672 行 |
+| AGP 9.5.0 の更新の差分 | +466 行（59 component、116 ハッシュ）、削除 0 | +7 行 |
+| 別の空の環境の検証 | 成功（main の状態、AGP の更新の後） | 成功 |
+| lockfile | 差分なし | 差分なし |
+
+ハッシュの行は親の POM の経路に関係なく書かれるので、1 回で揃う。代わりに、全成果物が最初の利用の信頼（Trust on first use）になり、更新のたびに数百行のハッシュをレビューすることになる。署名の検証がないので、公開者の鍵による確認も失う。再生成の回数のために検証を弱めないので、不採用とする。Android Studio の sync はこの方式では確認していない。
+
 ### 公式の issue との関係
 
 - [#19228](https://github.com/gradle/gradle/issues/19228)（open）と [#20194](https://github.com/gradle/gradle/issues/20194)（open）は、親や BOM の POM が metadata から欠ける問題である。Gradle の開発者は、解析済みの descriptor がキャッシュにあると親をたどらないことが原因だと[説明している](https://github.com/gradle/gradle/issues/20194#issuecomment-1652095447)。欠ける向きは warm cache で、`--refresh-dependencies` で解消した[報告](https://github.com/gradle/gradle/issues/19228)がある
@@ -289,7 +303,7 @@ Gradle 9.7.1 の dependency-management の jar に計測のログを足した配
 
 ### 一般的な運用例
 
-公開リポジトリでは `--refresh-dependencies` が多い。[Adyen](https://github.com/Adyen/adyen-android/blob/main/.github/workflows/update_verification_metadata.yml)、[Airflow](https://github.com/apache/airflow/blob/main/scripts/ci/prek/regenerate_java_sdk_verification_metadata.py)、[Besu](https://github.com/besu-eth/besu/blob/main/README.md)、[RSKj](https://github.com/rsksmart/rskj/blob/master/scripts/update-verification-metadata.sh)、[keycloak-mock](https://github.com/TNG/keycloak-mock/blob/main/.github/workflows/update-verification-metadata.yml) はいずれも `sha256` だけで、キャッシュがある前提の対策である。[AndroidX](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` で `--clean` を使い #19228 をコメントで参照している。[Renovate](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/gradle/artifacts.ts) は `--write-verification-metadata <hashTypes> dependencies` を 1 回実行する。[Dependabot で署名も使う例](https://github.com/SimonMarquis/Android-Playground/blob/main/.github/workflows/dependabot-gradle-dependencies.yaml)も 1 回である。`pgp,sha256` を 2 回実行する例は見つけられなかった。`--refresh-dependencies` が効くのは `sha256` の運用で、`pgp` の lab では効かないので、結果は矛盾しない。
+公開リポジトリでは `--refresh-dependencies` が多い。[Adyen](https://github.com/Adyen/adyen-android/blob/main/.github/workflows/update_verification_metadata.yml)、[Airflow](https://github.com/apache/airflow/blob/main/scripts/ci/prek/regenerate_java_sdk_verification_metadata.py)、[Besu](https://github.com/besu-eth/besu/blob/main/README.md)、[RSKj](https://github.com/rsksmart/rskj/blob/master/scripts/update-verification-metadata.sh)、[keycloak-mock](https://github.com/TNG/keycloak-mock/blob/main/.github/workflows/update-verification-metadata.yml) はいずれも `sha256` だけで、キャッシュがある前提の対策である。[AndroidX](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` で `--clean` を使い #19228 をコメントで参照している。この `--clean` は Gradle のオプションではなく、AndroidX 独自の `gradlew` が `GRADLE_USER_HOME` などを消す機能である。未改変の Gradle では未知のオプションとして失敗する。[Renovate](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/gradle/artifacts.ts) は `--write-verification-metadata <hashTypes> dependencies` を 1 回実行する。[Dependabot で署名も使う例](https://github.com/SimonMarquis/Android-Playground/blob/main/.github/workflows/dependabot-gradle-dependencies.yaml)も 1 回である。`pgp,sha256` を 2 回実行する例は見つけられなかった。`--refresh-dependencies` が効くのは `sha256` の運用で、`pgp` の lab では効かないので、結果は矛盾しない。
 
 ### 採用する手順
 
@@ -308,6 +322,15 @@ AGP 9.5.0 の更新で、前段を変えて比べた。すべて未改変の Gra
 | `--dependency-verification off help`、次に再生成 | 33 | 成功 | 26 行 |
 
 前段が再生成なら writer が全 configuration を解決するので、2 回目はすべてキャッシュから読まれ、仕組み 2 が起きない。前段が通常のビルドだと部分的なキャッシュになり、余分な行が入る。`--dry-run` を前段にしても速くならない。機械が空いた状態で、再生成 2 回は 196 秒、`--dry-run` を前段にすると 245 秒だった。
+
+AndroidX の手順も試した。[AndroidX の `update-verification-metadata.sh`](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` の再生成を `--dry-run` で 1 回だけ実行し、`.dryrun` のファイルを本来の名前に移す。`--clean` を空の環境に読み替えて、AGP 9.5.0 の更新で実行した。
+
+| 手順 | metadata の追加行 | 別の空の環境の検証 |
+| --- | --- | --- |
+| `--dry-run` で 1 回、`.dryrun` のファイルを移す | 2 | 失敗（`bc-jdk18on-bom-1.80.2.pom ... from repository Google`） |
+| `--dry-run` なしで 1 回 | 2 | 同じ失敗 |
+
+`--dry-run` の有無で metadata と keyring はバイト単位で一致した。この手順でも lab の 1 回の再生成は足りない。AndroidX で 1 回で足りているのかは確認していない。そのリポジトリの構成が、子と親の repository が分かれる条件に当たるかが違う可能性がある（推測）。
 
 `help` を前段にする案も、空の環境で 1 つずつ順番に測った。
 

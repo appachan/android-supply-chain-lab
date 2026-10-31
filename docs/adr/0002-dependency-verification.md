@@ -282,7 +282,7 @@ okhttp 4.12.0 を `:app` の `implementation` に足して比べた。検証は�
 
 結論として、人の手順にも空の `GRADLE_USER_HOME` と 2 回の実行が必要である。空の環境は不要な行を入れないために必要である。2 回の実行は okhttp では不要だったが、AGP 9.5.0 の更新では必要で、人は事前に見分けられない。2 回目は変更がなければ短い（okhttp で 12 秒）ので、常に 2 回実行する。
 
-運用手順のコマンドは、1 回目が失敗したら止まるように `&&` でつなぎ、一時的な環境のデーモンを止めて消す形に直した。AGP 9.5.0 の更新で実行し、別の空の環境の検証の成功を確認した。
+運用手順は `scripts/regenerate-dependency-metadata.sh` にまとめた。空の `GRADLE_USER_HOME` で 2 回実行し、失敗したら止まり、一時的な環境の Gradle デーモンを止めて消す。AGP 9.5.0 の更新で実行し、別の空の環境の検証の成功と、失敗のときに止まることを確認した。
 
 ## 検証の対象
 
@@ -599,10 +599,7 @@ Dependabot の PR の確認:
 手元で metadata を変更するとき（依存を手で追加したときなど）:
 
 ```sh
-sh -c 'export GRADLE_USER_HOME="$(mktemp -d)" &&
-  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build &&
-  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
-  status=$?; ./gradlew --stop; rm -rf "$GRADLE_USER_HOME"; exit $status'
+./scripts/regenerate-dependency-metadata.sh
 ```
 
 `ignored-key` が出たら、鍵の取得の一時的な失敗か確認する。残すと該当の成果物はハッシュで検証される。鍵を入れるなら再生成をやり直すか、手元で再生成する。`verify` が `Key servers are disabled` で失敗したら、keyring に鍵が入っていないので同じように直す。

@@ -9,11 +9,11 @@ androidGradlePlugin = "9.3.3"
 kotlin = "2.4.21"
 
 # Libraries
-androidxActivity = "1.12.4"
+androidxActivity = "1.13.0"
 androidxComposeBom = "2026.09.00"
-androidxTestRunner = "1.6.2"
+androidxTestRunner = "1.7.0"
 junit4 = "4.13.2"
-tmpAwsAnnotations = "2.56.0"
+tmpAwsAnnotations = "2.57.3"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }

@@ -19,7 +19,7 @@ Gradle の依存検証（`gradle/verification-metadata.xml`）は、ビルドが
 - `verify` は鍵サーバーを使わない（`<key-servers enabled="false">`）。再生成では到達できる 2 台から鍵を取得する
 - `*-sources.jar` と `*-javadoc.jar` は `trusted-artifacts` で検証の対象から外す
 - Dependabot の Gradle の PR では、依存のコードを実行する読み取り専用のジョブと、書き込むジョブを分ける
-  - `Regenerate verification metadata`（`pull_request`、`contents: read`）が metadata を再生成して artifact にする
+  - `Regenerate verification metadata`（`pull_request`、`contents: read`）が metadata と `gradle.lockfile`（ADR-0003）を再生成して artifact にする
   - `Commit verification metadata`（`workflow_run`、`main` の定義）は PR のコードを実行せず、artifact をデータとして検査し、API でコミットする
 - 検査では、再生成では起こらない変更（検証設定の変更、既存の値の変更、信頼する鍵の署名の検証失敗）を機械的に拒否する。残りの差分をコミット本文に分類して出し、人が確認する
 - CI の成功は metadata の承認として扱わない。人が差分を確認して merge する。auto-merge は使わない
@@ -414,8 +414,8 @@ Dependabot の PR の確認:
 
 ```sh
 GRADLE_USER_HOME="$(mktemp -d)" sh -c '
-  ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
-  ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
+  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
 '
 ```
 
@@ -435,7 +435,9 @@ rss-reader は読むだけで、まだ適用していない。
 - `key-servers` の設定は lab と同じものを使う。`build-logic` と foojay の依存があるので、最初の生成で `ignored-key` がなくなるまで確認する
 - `setup-gradle` を使っている。ADR-0001 の理由で、再生成のジョブには入れない。キャッシュから入った依存も検証されることは手元で確認したが、`setup-gradle` との組み合わせは確認していない
 - 再生成のタスクを CI と揃える。`spotlessCheck`、`detekt`、`lint`、`test` は実行時に依存を解決するので、`build` に含まれない分があれば明示する
-- `build-logic` は included build で、[公式](https://docs.gradle.org/current/userguide/dependency_verification.html)によればルートの metadata を使う。`settings.gradle.kts` の foojay の plugin も検証の対象になる
+- `build-logic` は included build で、ルートの metadata を使う。lab に同じ構成を足して確認した（ADR-0003 の論点 7）。`settings.gradle.kts` の foojay の plugin も検証の対象になる
+- `build` で再生成した metadata で `assembleDebugAndroidTest` も空の環境の verify を通る。androidTest の分は lint のタスクが取得する。再生成から `lint` や `test` を外さない
+- 再生成のコマンドに `--write-locks` を入れ、`gradle.lockfile` もコミットの対象にする（ADR-0003）
 - `distributionUrl` は 9.1.0、AGP は 9.0.1 で lab と異なるので、metadata は rss-reader で生成する。鍵の取得の失敗があれば、論点 2 の方法で ignored key をなくす
 - ruleset は `main` だけに適用され、署名付きコミット、`verify`、merge コミットを要求する。再生成コミットは `verified: true` なので署名の条件を満たす見込みである
 - ruleset の `require_extra_approval_for_unattributed_changes` が bot のコミットにどう作用するかは確認していない

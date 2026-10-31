@@ -23,13 +23,15 @@ Accepted
 
 検査の目的は、意図しない版が使われないことと、ビルドした時期で版が変わらないことである。自然なアプローチを優先し、それで解決できないときだけ追加の仕組みを許容する。
 
-1. 時期による変化は `failOnNonReproducibleResolution()` で防ぐ
-2. 決定的だが意図しない版は `gradle.lockfile` で止めて、PR の差分で確認する。対象は subproject の `*CompileClasspath` と `*RuntimeClasspath` である。lock と `failOn` は同じ configuration で併用できないので、それ以外の configuration と root の plugin の classpath に `failOnNonReproducibleResolution()` を設定する
+1. 時期による変化は `failOnNonReproducibleResolution()` で防ぐ。root、subproject、settings の classpath と included build にも設定する
+2. 決定的だが意図しない版は `gradle.lockfile` で止めて、PR の差分で確認する。対象は subproject の `*CompileClasspath` と `*RuntimeClasspath` で、androidTest を含む。lock と `failOn` は同じ configuration で併用できないので、それ以外の configuration に `failOnNonReproducibleResolution()` を設定する
 3. 特定の module を上げたくないときは、`constraints` の `reject` を使う。`strictly`、`enforcedPlatform` は常用しない。推移的依存を上げるときは catalog の項目と `constraints` を使う
 4. 自作の `checkResolvedVersions` は廃止する。dependency-guard は採用しない
 5. `buildscript-gradle.lockfile` は使わない。plugin の classpath の推移的依存の変化は PR で見えないが、許容する
+6. lock の更新は `./gradlew --write-locks build` で行う。再生成のワークフローも同じ `--write-locks` を使い、metadata と lockfile を一緒にコミットする
+7. `build-logic` の依存は metadata で検証し、lock はしない
 
-最初の決定は、自作の検査を基本にし、locking を採用しないというものだった。その前提は誤りだったので見直した。経緯と比較は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。以下の論点 1 から 5 の実験は記録として残す。
+最初の決定は、自作の検査を基本にし、locking を採用しないというものだった。その前提は誤りだったので見直した。経緯と比較は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。rss-reader と同じ種類の構成での確認は[論点 7](#論点-7-rss-reader-相当の構成での確認)に書く。以下の論点 1 から 5 の実験は記録として残す。
 
 ## 論点 1: 再現
 
@@ -238,7 +240,7 @@ M7: 結論として、推移的依存にも効く。POM と Gradle Module Metada
 
 対策と運用への影響:
 
-- lab には 3 経路のどれもないので、コードは変更しない。使い始めるときに上の設定を足す
+- 最終形は[論点 7](#すり抜けの対策の最終形)で確認した。root の `subprojects` に書く形に変わった
 - rss-reader には settings の plugin と `build-logic` があるので、[適用の差分](#rss-reader-に適用するときの差分)に含める
 - ライブラリが動的な版の依存を公開すると、その更新の PR の CI が失敗する。範囲なら、catalog の項目と `constraints` で範囲内の版を宣言すると通る。既存の手順と同じである。宣言する版は、更新前に解決されていた版を基準に選ぶ
 - `1.+`、`latest.release` などは `constraints` の通常の宣言では通らないはずである（`1.+` と直接の 2.5 の結果と実装からの判断で、この組み合わせは実行していない）。`constraints` の `strictly` を使う。これは決定 3 の例外で、低い固定の危険があるので、解決結果の版に合わせ、理由をコメントに残す
@@ -478,7 +480,7 @@ Gradle 9.7.1、AGP 9.3.3 で動いた。root に `classpath`、app に `debugRun
 | AGP とライブラリを同時に更新（`groups` で起きる） | lock が古いまま残る。main の再生成のコマンドは `Cannot find a version` で失敗 |
 | 再生成のコマンドに `--write-locks` を足す | 2 回とも成功。lock の差分は +11/-11 で、strict の `build` も成功 |
 
-両立は条件付きである。ライブラリだけの PR はそのまま動く。plugin と同じ PR では Dependabot の lock の更新が失敗するので、再生成のジョブが lock も更新する必要がある。main の 2 つのワークフローに次の変更が要る。テーマ 2 のファイルなので、このブランチでは変更していない。Actions の上では実行していない。
+両立は条件付きである。ライブラリだけの PR はそのまま動く。plugin と同じ PR では Dependabot の lock の更新が失敗するので、再生成のジョブが lock も更新する必要がある。2 つのワークフローの変更は次のとおりで、このブランチに入れた。
 
 ```diff
 --- a/.github/workflows/regenerate-verification-metadata.yml
@@ -490,12 +492,15 @@ Gradle 9.7.1、AGP 9.3.3 で動いた。root に `classpath`、app に `debugRun
 @@
              gradle/verification-metadata.xml
              gradle/verification-keyring.keys
-+            app/gradle.lockfile
---- a/.github/workflows/commit-verification-metadata.yml
-+++ b/.github/workflows/commit-verification-metadata.yml
++            **/gradle.lockfile
 ```
 
-`commit-verification-metadata.yml` は、比較と `fileChanges` に lockfile を加える。`upload-artifact` は共通の親を基準に配置するので、ダウンロード先のパスも合わせて変更する。lockfile は検証なしで実行したジョブの出力なので、metadata と同じく信頼しないデータとして扱う。版の変更は PR の差分で人が確認する。
+`commit-verification-metadata.yml` は、比較とコミットの対象に PR の tree にある `gradle.lockfile` を加えた。artifact にあるものをそのまま受け取らないので、再生成のジョブが別のパスに置いたファイルはコミットされない。`upload-artifact` は共通の親を基準に配置するので、artifact の中のパスは `gradle/verification-metadata.xml` のようにリポジトリのパスと同じになる。lockfile は検証なしで実行したジョブの出力なので、metadata と同じく信頼しないデータとして扱う。版の変更は PR の差分で人が確認する。
+
+確認の範囲は次のとおり。`workflow_run` は main の定義で動き、`pull_request` の実行には PR が要るので、ワークフローそのものの実行は統合後になる。
+
+- `Regenerate` のコマンドと `upload-artifact` は、一時ブランチの `ci.yml` に同じ内容を書いて Actions で実行し、artifact の配置を確認した（[run 41176744408](https://github.com/appachan/android-supply-chain-lab/actions/runs/41176744408)）
+- `Commit` の `run` の内容は、`gh` を偽物に差し替えて手元で実行した。差分なしならコミットせず、lock の差分があれば全ファイルを `additions` に入れ、artifact に足した `.github/workflows/gradle.lockfile` はコミットしないことを確認した
 
 ### 比較
 
@@ -540,6 +545,141 @@ S1、S5、S8 が通るのは、使う版が変わらないからである。使�
 
 main の 80c3f5d と merge した状態の CI は成功した（[run 41166135144](https://github.com/appachan/android-supply-chain-lab/actions/runs/41166135144)）。
 
+## 論点 7: rss-reader 相当の構成での確認
+
+12a943f の時点では lab が 1 module で、rss-reader への適用のときに確認するとしていた点があった。lab に同じ種類の構成を足して確かめた。
+
+| rss-reader | lab | 備考 |
+| --- | --- | --- |
+| `:feature:*`、`:shared:ui` | `:feature:greeting`、`:shared:ui` | Android library。`:app` → `:feature:greeting` → `:shared:ui` |
+| `:shared:domain` | `:shared:domain` | Kotlin JVM。rss-reader と同じく `jvmToolchain(17)` を使う |
+| `build-logic`（`pluginManagement` の `includeBuild`） | 同じ | convention plugin の依存は `compileOnly` で catalog から取る |
+| foojay の settings の plugin | 同じ（1.0.0） | |
+| androidTest のソースはない。`androidTestImplementation` の宣言だけ | `:app`、`:feature:greeting`、`:shared:ui` にテストを足した | 端末では実行しない。コンパイルとリソースの解決まで |
+| subproject の `plugins` の版付きの plugin はない | 実験のときだけ足した | |
+
+### lock の範囲
+
+androidTest の configuration は lock される。`--write-locks build` で、`debugAndroidTestCompileClasspath` は `:app` が 99 行、library が 92 行、`debugAndroidTestRuntimeClasspath` は 104 行と 120 行入った。`build` は androidTest をコンパイルしないが、`lintAnalyzeDebugAndroidTest` が解決する。
+
+全 module の更新は `./gradlew --write-locks build` の 1 コマンドで足りる。module の列挙も、追加の task も要らない。Compose BOM を変えた状態で比べた。
+
+| コマンド | 結果 |
+| --- | --- |
+| `./gradlew --write-locks dependencies` | module の lock は変わらない。root の project しか見ない |
+| `./gradlew --write-locks :app:dependencies` | `:app` だけ更新される（+42/-42） |
+| `./gradlew --write-locks :app:assembleDebug` | 解決した configuration だけ更新され、残りは古い版の行のまま残る（+228/-114）。使わない |
+| `./gradlew --write-locks build` | BOM に関係する 3 module の全 configuration が更新される（+126/-126）。`:shared:domain` は変わらない |
+| 同じコマンドで、コンパイルが失敗する状態 | 終了コードは 1 だが、lock は上と同じ行数で更新される |
+| 依存を変えずに同じコマンド | 差分なし |
+
+`-x test` を付けると足りなくなる。rss-reader のコピーで `--write-locks build -x test` は 2,634 行で、`:shared:domain` と `:shared:testing` の `test*Classpath` が書かれなかった。Android の module は lint が解決するが、JVM の module はテストのタスクが解決するためである。`-x` なしの `build` は Dependabot の init script と同じ 2,729 行になった。`-x lint` は実行していないが、androidTest の解決が lint に依存するので同じ問題が起きるはずである。
+
+`--write-locks` はルートに `settings-gradle.lockfile` も作るが、中身は `empty=incomingCatalogForLibs0` だけなので `.gitignore` に入れた。
+
+### 検証の範囲
+
+`build` で再生成した metadata で、`assembleDebugAndroidTest` は空の環境の verify を通る。再生成と CI のコマンドの変更は要らない。
+
+| 確認 | 結果 |
+| --- | --- |
+| 手元: 空の環境で再生成 2 回の後、別の空の環境で `build`、さらに別の空の環境で `assembleDebugAndroidTest` | すべて成功。2 回目の再生成の差分は 0 行 |
+| Actions: 同じ手順（[run 41176744408](https://github.com/appachan/android-supply-chain-lab/actions/runs/41176744408)） | すべて成功。Linux の結果は metadata、keyring、lockfile とも手元の macOS の結果とバイト単位で一致 |
+| 上の metadata に `--write-verification-metadata pgp,sha256 --export-keys assembleDebugAndroidTest` を重ねる | 差分 0 行。`build` の外に増える成果物はない |
+| 対照: metadata から `espresso-core` を消す | `Dependency verification failed for configuration ':app:detachedConfiguration1'` で失敗。検証は効いている |
+
+`build` で足りるのは、`lintAnalyzeDebugAndroidTest` が androidTest の依存の成果物まで取得するからである。逆に言うと、`build` は androidTest のコンパイルを確認しない。lab の androidTest のコードは手元と Actions で `assembleDebugAndroidTest` を実行して確認したが、`ci.yml` には足していない。`connectedAndroidTest` の UTP の依存は端末がないので確認していない。
+
+### すり抜けの対策の最終形
+
+次の形にした。[M7](#failonnonreproducibleresolution-と推移的依存) の対策を root の `subprojects` の形に書き換えたものである。
+
+```kotlin
+// build.gradle.kts
+subprojects {
+    buildscript.configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
+    configurations.configureEach { /* lock と failOn の振り分け */ }
+}
+
+// settings.gradle.kts
+buildscript {
+    configurations.all { resolutionStrategy.failOnNonReproducibleResolution() }
+}
+
+// build-logic/convention/build.gradle.kts
+buildscript {
+    configurations.classpath { resolutionStrategy.failOnNonReproducibleResolution() }
+}
+configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
+```
+
+範囲 `[1.0,2.0)` の推移的依存を持つ偽のモジュールを、経路ごとに POM と GMM で入れた。対照は該当の設定だけを外した状態で、`--dependency-verification lenient` で実行した。
+
+| 経路 | 対照 | 最終形 |
+| --- | --- | --- |
+| subproject の `plugins` の版付きの plugin | 通過（1.9） | `disallows usage of dynamic versions` で失敗 |
+| settings の `plugins` | 通過（1.9） | 失敗 |
+| `build-logic` の `plugins` | 通過（1.9） | 失敗 |
+| `build-logic` の `compileOnly` | 通過（1.9） | 失敗 |
+| `build-logic` の `implementation` | 失敗 | 失敗 |
+
+`implementation` が対照でも失敗するのは、convention plugin の実行時の依存が `:app` の plugin の classpath に載り、`subprojects` の設定が止めるためである。`compileOnly` にはこの経路がないので、`build-logic` の `configurations.configureEach` が必要である。
+
+lock と `failOn` を分けたことで、lock した configuration に入る動的な版は lint の configuration で止めている。この到達範囲を module の種類ごとに確かめた。`--write-locks build` を実行し、範囲と SNAPSHOT の両方を試した。
+
+| 宣言 | 結果 |
+| --- | --- |
+| `:app`、`:shared:ui`、`:shared:domain` の `implementation` | 失敗。`:shared:domain` は lint がないが、Android の consumer の lint で止まる |
+| 各 module の `testImplementation`、`androidTestImplementation` | 通過。範囲は lock で固定されるが、SNAPSHOT は中身が変わりうる |
+
+test と androidTest だけの依存の SNAPSHOT は止まらない。出荷する classpath には入らず、lab と rss-reader のリポジトリには SNAPSHOT の配布元がないので、許容する。配布元を足すときは見直す。
+
+### build-logic の扱い
+
+metadata は必要である。root の `gradle/verification-metadata.xml` が included build にも適用される。`org.gradle.kotlin.kotlin-dsl` の component を消すと `build-logic` の解決で `Dependency verification failed` になった。再生成の `build` は included build の依存も記録する。
+
+lock はしない。有効にすること自体はでき、root の `--write-locks build` で `build-logic/convention/gradle.lockfile` が 29 行で作られる。しかし次の理由で得るものがない。
+
+- 依存は `compileOnly` で、ビルドの実行時の版は root の plugin の classpath で決まる
+- 版は catalog にあり、`failOn` と metadata で時期と成果物は守られる
+- AGP を上げると lock の更新が必須になり（`Could not resolve com.android.tools.build:gradle:9.5.0`）、更新の手間が増える
+
+Dependabot の扱いは実装から次のように読める（[dependabot-core 85379652](https://github.com/dependabot/dependabot-core/tree/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle)）。実際の動作は未確認である。
+
+- [`file_fetcher.rb`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_fetcher.rb#L88-L101) は `includeBuild` を settings から読み、included build の build script、settings、lockfile を更新の対象として取得する。`pluginManagement` の中の `includeBuild` も正規表現で拾う
+- ただし [version catalog は root の `gradle/libs.versions.toml` だけ](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_fetcher.rb#L269-L273)である。`build-logic` が catalog から取る依存は、root の catalog の更新として PR になる見込みである。build script に直接書いた版は `build-logic` のファイルの更新になる
+- 既定の [`dependabot.yml`](../../.github/dependabot.yml) の `directory: /` で足りる見込みである
+- [`lockfiles_for_root`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L100-L111) は別の settings を持つ build の lockfile を root の更新から除外する。`build-logic` を lock すると、catalog の更新では Dependabot が更新しない。これも lock しない理由である
+
+### Dependabot の手順の再現
+
+Compose BOM 2026.08.00、AGP 9.3.3 で metadata と lock を作った状態から、catalog だけを更新した。init script は dependabot-core の現在の内容を取り出し、[`write_properties_file`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L230-L259) の設定のうち toolchain に関わるものを足した。toolchain の自動取得と検出を切ったので、JDK 17 がない環境の fallback も通っている（`Java toolchain 17 is not available, compiling with 21`）。
+
+| 更新 | `dependabotResolveAll --write-locks` | lock の差分 | 再生成（`--write-locks build` 2 回）の後 | 空の環境の strict |
+| --- | --- | --- | --- | --- |
+| BOM 2026.09.00 | 成功（141 秒） | 3 module で各 42 行の版の変更。消えた行、増えた行、configuration の変化は 0 | Dependabot の結果とバイト単位で一致 | `build assembleDebugAndroidTest` 成功 |
+| AGP 9.5.0 と BOM | 失敗。`bc-jdk18on-bom-1.80.2.pom` の `Dependency verification failed` | 変化なし | 再生成で 3 module が更新される | 成功 |
+| AGP 9.5.0 だけ | 同じ失敗 | 変化なし | 変化なし | 成功 |
+
+全 module の lock が更新され、誤って消える行はなかった。`:shared:domain` は BOM に関係しないので、変わらないのが正しい。plugin を含む更新の結果は 1 module のときと同じで、再生成の `--write-locks` で揃う。
+
+### コスト
+
+| 項目 | 1 module（f0058dd） | multi-module | 増分 |
+| --- | --- | --- | --- |
+| lockfile の総行数 | 109 | 421（4 ファイル） | +312 |
+| `verification-metadata.xml` の行数 | 379 | 626 | +247 |
+| `build` のタスク数 | 95 | 265 | +170 |
+| 手元、空の環境の再生成の 1 回目 | 141 秒 | 278 秒 | +137 秒 |
+| 手元、再生成の 2 回目 | 5 秒 | 32 秒 | +27 秒 |
+| 手元、空の環境の `build` | 124 秒 | 187 秒 | +63 秒 |
+| Actions、`build` の step | 225 秒（[run 41170286509](https://github.com/appachan/android-supply-chain-lab/actions/runs/41170286509)） | 246 秒（[run 41176718997](https://github.com/appachan/android-supply-chain-lab/actions/runs/41176718997)） | +21 秒 |
+| Actions、再生成の step | 186 秒（[run 41169783963](https://github.com/appachan/android-supply-chain-lab/actions/runs/41169783963)、`--write-locks` なし） | 271 秒（run 41176744408） | +85 秒 |
+
+手元の値はすべて macOS の 1 回の測定である。Actions の再生成の 1 module の値は Dependabot の PR のもので、依存の内容が少し違う。lock の有無を分けて測ってはいないが、lock の検査に専用のタスクはないので、増分の大半は module を足したことによる見込みである。
+
+rss-reader の 10 module では計 2,729 行で、全 module の `build` は 824 タスクである。
+
 ## 運用手順
 
 `gradle.lockfile` と異なる版が解決されて CI が失敗したとき:
@@ -550,10 +690,10 @@ main の 80c3f5d と merge した状態の CI は成功した（[run 41166135144
    ./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency <group:name>
    ```
 
-2. 問題がなければ lock を更新して、差分をコミットする
+2. 問題がなければ lock を更新して、差分をコミットする。`-x test` などで範囲を狭めず、タスクも `build` 以外にしない。解決されなかった configuration の行が古いまま残る
 
    ```sh
-   ./gradlew :app:dependencies --write-locks
+   ./gradlew --write-locks build
    ```
 
 3. 問題があれば、更新を見送るか、`reject` で止める
@@ -571,7 +711,7 @@ catalog の版を下げるときは lock も更新する。更新しないと使
 
 ## rss-reader に適用するときの差分
 
-コピー（227fb9c）で確認した。元のリポジトリは変更していない。CI の step の追加は要らない。lock はすべてのビルドで効く。
+コピー（227fb9c）で確認した。元のリポジトリは変更していない。CI の step の追加は要らない。lock はすべてのビルドで効く。再生成のワークフローは lab の形に揃える（ADR-0002）。
 
 1. `build.gradle.kts` に追加する
 
@@ -586,6 +726,7 @@ catalog の版を下げるときは lock も更新する。更新しないと使
     }
    +
    +subprojects {
+   +    buildscript.configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
    +    configurations.configureEach {
    +        if (name.endsWith("CompileClasspath", ignoreCase = true) || name.endsWith("RuntimeClasspath", ignoreCase = true)) {
    +            resolutionStrategy.activateDependencyLocking()
@@ -618,16 +759,16 @@ catalog の版を下げるときは lock も更新する。更新しないと使
    +configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
    ```
 
-3. lockfile を生成してコミットする。root の `dependencies` は subproject を辿らないので、module ごとの `dependencies` を並べるか、[Dependabot の init script](#再現手順) を使う。確認では init script を使った
+3. lockfile を生成してコミットする。`-x test` を付けると JVM の module の lock が欠ける
 
    ```sh
-   ./gradlew :app:dependencies :shared:domain:dependencies --write-locks
+   ./gradlew --write-locks build --continue
    ```
 
 確認の結果:
 
-- 10 module で計 2,729 行の `gradle.lockfile` ができた。全 configuration を lock すると 4,739 行である
-- `./gradlew build --continue -x test` が成功した（730 タスク）。誤検知はない
+- 10 module で計 2,729 行の `gradle.lockfile` ができた。init script の結果と同じ行数である。全 configuration を lock すると 4,739 行である
+- 上の差分をすべて入れた状態で `./gradlew --write-locks build --continue` が成功した（824 タスク）。誤検知はない。metadata はまだないので verify は含まない
 - `junit-vintage-engine` の catalog の 5.10.2 は変更しない。使う版は lock の 5.12.2 である。直すなら catalog を上げるだけでよい
 - plugin の classpath の lock、`build-logic` の lock は行わない
 
@@ -642,7 +783,7 @@ catalog の版を下げるときは lock も更新する。更新しないと使
 +    debugImplementation("androidx.tracing:tracing:1.3.0")
 ```
 
-`./gradlew build` が `not part of the dependency lock state` で失敗し、`./gradlew :app:dependencies --write-locks` の差分に debug の行だけが出る。
+`./gradlew build` が `not part of the dependency lock state` で失敗し、`./gradlew --write-locks build` の差分に debug の行だけが出る。
 
 Dependabot の lock の更新の再現は、[`write_init_script`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L308-L335) の内容を取り出して次を実行する。
 
@@ -650,21 +791,22 @@ Dependabot の lock の更新の再現は、[`write_init_script`](https://github
 ./gradlew --init-script dependabot-locking.init.gradle dependabotResolveAll --write-locks --no-daemon
 ```
 
-このコマンドの実行では `settings-gradle.lockfile` もできるが、中身はないのでコミットしない。`gradle.lockfile` の `empty=` の行は実行するコマンドで有無が変わるが、解決には影響しない。
+`gradle.lockfile` の `empty=` の行は実行するコマンドで有無が変わるが、解決には影響しない。
 
 ## main に統合するときの注意
 
-- `README.md` の 2 か所が競合する。テーマ 2 の行とテーマ 3 の行の両方を残す
-- 上記の再生成のワークフローの変更を同時に入れる。入れないと、plugin とライブラリを同時に更新した PR の再生成が失敗する
-- 統合後に実際の Dependabot の PR で、ライブラリだけの更新と、plugin を含む更新の両方を確認する
+- main の fb37f22 までは merge 済みである。統合の後に動く 2 つのワークフローは、このブランチで変更した定義になる
+- 統合で構成が multi-module に変わるので、開いている Dependabot の PR は rebase が必要になる
+- 統合後に実際の Dependabot の PR で、ライブラリだけの更新と、plugin を含む更新の両方を確認する。特に `Commit` が lockfile を含めてコミットすること、`build-logic` の扱いが[実装から読んだとおり](#build-logic-の扱い)であること
 
 ## Consequences
 
 - 使う版が変わると、ライブラリの compile と runtime の classpath で CI が止まるか、PR の `gradle.lockfile` の差分に出る
 - 依存の更新で `gradle.lockfile` の差分のレビューが増える。自作のスクリプトはなくなる
-- 動的な版と changing な版は、推移的依存を含めて使えない。lock した configuration の分は lint の configuration で止まるので、AGP の configuration の名前に依存する
+- 動的な版と changing な版は、推移的依存を含めて使えない。lock した configuration の分は lint の configuration で止まるので、AGP の configuration の名前に依存する。test と androidTest だけの依存は止まらない
 - catalog の値と使う版の不一致は検知しない。正しい版は `gradle.lockfile` にある
 - plugin の classpath の推移的依存の変化は PR に出ない
 - `verification-metadata.xml` は版の変化を見るものではない。ADR-0002 が確認するのは新しい鍵と無署名の成果物である
-- plugin と同じ PR でライブラリを更新すると、再生成のジョブが lock を更新する必要がある。main のワークフローの変更は統合のときに行う
-- subproject、settings、included build の classpath は `failOnNonReproducibleResolution()` の対象外なので、使い始めるときに設定を足す
+- plugin と同じ PR でライブラリを更新すると、再生成のジョブが lock を更新する
+- module を足すと `subprojects` の設定は自動で届くが、included build を足したときは `failOnNonReproducibleResolution()` の設定を足す
+- `build` は androidTest のコンパイルを確認しない。依存の解決と成果物の検証は lint の経由で行われる

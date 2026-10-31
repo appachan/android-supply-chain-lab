@@ -13,9 +13,6 @@ updates:
       gradle:
         patterns:
           - '*'
-    # temporary: plugin and library experiment
-    ignore:
-      - dependency-name: gradle-wrapper
 
   - package-ecosystem: github-actions
     directory: /

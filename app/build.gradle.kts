@@ -19,15 +19,6 @@ dependencies {
     implementation(project(":shared:ui"))
 
     implementation(libs.androidx.activity.compose)
-    implementation(libs.tmp.commons.codec)
-
-    constraints {
-        implementation(libs.tmp.commons.codec) {
-            version {
-                strictly(libs.versions.tmpCommonsCodec.get())
-            }
-        }
-    }
 
     testImplementation(libs.junit4)
 }

@@ -2,7 +2,6 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :shared:domain:dependencies --write-locks
-commons-io:commons-io:2.21.0=runtimeClasspath
 org.jetbrains.kotlin:kotlin-stdlib:2.4.21=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.jetbrains:annotations:13.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 empty=

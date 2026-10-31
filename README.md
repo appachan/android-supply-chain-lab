@@ -47,4 +47,22 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 ./gradlew build
 ```
 
-各 module の `gradle.lockfile` と異なるバージョンが解決されるとビルドが失敗する。依存を変えたときは、ADR-0002 の手順で `gradle/verification-metadata.xml` と `gradle.lockfile` を一緒に更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
+各 module の `gradle.lockfile` と異なるバージョンが解決されるとビルドが失敗する。依存を変えたときは、次の手順で `gradle/verification-metadata.xml` と `gradle.lockfile` を一緒に更新する。詳細は [ADR-0002](docs/adr/0002-dependency-verification.md) と [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
+
+## 依存を追加する
+
+1. 依存を `gradle/libs.versions.toml` と build script に足す
+2. Android Studio の sync が検証で止まる。`This can indicate that a dependency has been compromised` の定型の文言は、未登録の依存でも出る
+3. 再生成のスクリプトを実行する
+
+   ```sh
+   ./scripts/regenerate-dependency-metadata.sh
+   ```
+
+4. Android Studio の sync が通ることを確かめる
+5. 差分で、増えた鍵と group の範囲を確かめる。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
+6. PR を出す
+
+## Gradle を更新する
+
+Gradle の更新の PR は、merge の前に Android Studio で sync する。Gradle の更新で鍵や取得するソースが変わると、CI は成功して sync だけが失敗することがある。

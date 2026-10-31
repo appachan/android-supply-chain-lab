@@ -458,7 +458,7 @@ Approve で再実行された `Regenerate verification metadata` は差分を作
 | 場合 | event | actor | 結果 |
 | --- | --- | --- | --- |
 | Dependabot のコミット | `pull_request` | `dependabot[bot]` | 20 件すべて承認なしで実行された |
-| 再生成のコミット | `pull_request` | `github-actions[bot]` | 14 件すべて承認待ちになった（attempt 1）。PR が閉じた後に `failure` へ変わるものがある |
+| 再生成のコミット | `pull_request` | `github-actions[bot]` | 14 件すべて attempt 1 のジョブが 0 件で、1 つも動いていない。2 件は `action_required` のまま、2 件は Approve の後に成功、10 件は `failure` である。`failure` のうち観測できた 3 件は、`action_required` から PR が閉じた後に変わった |
 | `Run CI on the new commit` | `workflow_dispatch` | `github-actions[bot]` | 承認なしで実行されるが、必須チェックを満たさない |
 
 fork の設定は関係しない。PR の head は同じリポジトリで、`actions/permissions/fork-pr-contributor-approval` の `first_time_contributors` は [fork の PR](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks) の承認の設定である。environment もない。

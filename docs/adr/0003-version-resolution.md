@@ -586,7 +586,16 @@ androidTest の configuration は lock される。`--write-locks build` で、`
 | 上の metadata に `--write-verification-metadata pgp,sha256 --export-keys assembleDebugAndroidTest` を重ねる | 差分 0 行。`build` の外に増える成果物はない |
 | 対照: metadata から `espresso-core` を消す | `Dependency verification failed for configuration ':app:detachedConfiguration1'` で失敗。検証は効いている |
 
-`build` で足りるのは、`lintAnalyzeDebugAndroidTest` が androidTest の依存の成果物まで取得するからである。逆に言うと、`build` は androidTest のコンパイルを確認しない。lab の androidTest のコードは手元と Actions で `assembleDebugAndroidTest` を実行して確認したが、`ci.yml` には足していない。`connectedAndroidTest` の UTP の依存は端末がないので確認していない。
+`build` で足りるのは、`lintAnalyzeDebugAndroidTest` が androidTest の依存の成果物まで取得するからである。逆に言うと、`build` は androidTest のコンパイルを確認しない。lab の androidTest のコードは手元と Actions で `assembleDebugAndroidTest` を実行して確認したが、`ci.yml` には足していない。
+
+`connectedAndroidTest` も、再生成と CI のコマンドの変更なしで検証を通る。`Pixel_9_API_35`（API 35）の emulator で次を確かめた。
+
+| 確認 | 結果 |
+| --- | --- |
+| 空の環境で `./gradlew connectedAndroidTest --continue` | 成功。`:app`、`:feature:greeting`、`:shared:ui` で各 1 件のテストが通り、`com.android.tools.utp` の依存が取得された |
+| 上の metadata に `--write-verification-metadata pgp,sha256 --export-keys connectedAndroidTest` を重ねる | 差分 0 行。`build` の再生成の外に増える成果物はない |
+
+`com.android.tools.utp` は metadata の `^com[.]android($|([.].*))` の鍵で検証される。この鍵を消すと AGP の解決が先に失敗するので、UTP の依存だけを切り分けた対照は取れていない。emulator のイメージと `adb` は Gradle の依存ではないので、この検証の対象外である。
 
 ### すり抜けの対策の最終形
 
@@ -909,6 +918,8 @@ Dependabot の lock の更新の再現は、[`write_init_script`](https://github
 | [PR #9](https://github.com/appachan/android-supply-chain-lab/pull/9) | AGP 9.5.0、BOM、`commons-codec` | ライブラリは成功、AGP で失敗。lockfile は [PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8) と同じ | fc75dd0。metadata +22/-1、keyring +46。lockfile の差分なし | true | [run 41184867232](https://github.com/appachan/android-supply-chain-lab/actions/runs/41184867232) |
 
 どの PR も Dependabot の最初のコミットの CI は検証で失敗し、再生成のコミットの `workflow_dispatch` の CI が成功した。
+
+metadata に更新先のバージョンが既にあるときは、再生成のコミットは作られない。[PR #11](https://github.com/appachan/android-supply-chain-lab/pull/11) はバージョンを下げて作った更新なので、`Regenerate verification metadata` の差分がなく、Dependabot のコミットの CI（[run 41188776277](https://github.com/appachan/android-supply-chain-lab/actions/runs/41188776277)）がそのまま成功した。lockfile は Dependabot が更新した 3 件である。
 
 ### lockfile の一致
 

@@ -21,6 +21,7 @@ Gradle の依存検証（`gradle/verification-metadata.xml`）は、ビルドが
 - Dependabot の Gradle の PR では、依存のコードを実行する読み取り専用のジョブと、書き込むジョブを分ける
   - `Regenerate verification metadata`（`pull_request`、`contents: read`）が metadata と `gradle.lockfile`（ADR-0003）を再生成して artifact にする
   - `Commit verification metadata`（`workflow_run`、`main` の定義）は PR のコードを実行せず、artifact をデータとして検査し、API でコミットする
+- Gradle の `cooldown` は `default-days: 7` で、`androidx.*` を対象外にする（「cooldown と Google Maven のライブラリ」）
 - 検査では、再生成では起こらない変更（検証設定の変更、既存の値の変更、信頼する鍵の署名の検証失敗）を機械的に拒否する。残りの差分をコミット本文に分類して出し、人が確認する
 - CI の成功は metadata の承認として扱わない。人が差分を確認して merge する。auto-merge は使わない
 
@@ -101,7 +102,7 @@ Gradle の更新は `groups` で 1 つの PR にする。全ての PR が同じ 
 
 コンフリクトを作っただけでは Dependabot のジョブは起動しなかった。15 分待っても run がなく、`dependabot.yml` の変更で起動した。実際の運用では、次の定期実行か `@dependabot rebase` まで待つ可能性がある。PR #1 は同じジョブの後も `CONFLICTING` のままだったが、`[dependabot skip]` なしのコミットがあることに加えて、グループ化で個別の更新の対象外になっているので、原因は切り分けられていない。
 
-cooldown は 7 日に設定するが、Google Maven のプラグインには効かない。公開から 2 日の AGP 9.5.0 が提案された。ログは `Using POM Last-Modified fallback release dates for com.android.application from https://plugins.gradle.org/m2` と `Filtered out 0 version(s) due to cooldown` を出している。Plugin Portal は Maven Central へ 303 でリダイレクトし、Central は 404 を返すが、その応答に `Last-Modified: Sat, 11 Oct 2025` が付いている。[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/package/version_release_date_fallback_fetcher.rb)は status を確認せずにこの値を公開日として使う。ライブラリの結果は公開日に関係しない。`androidx.activity:activity-compose` では 26 版が除外されたが、ログの理由は `Release date not available for version 1.13.0 - filtering out` である。実際のログでは、Google Maven の公開日は `maven-metadata.xml` の最新の 1 バージョン分しか取れていない。最新が pre-release の `activity-compose`（1.14.0-alpha03）と `androidx.test:runner`（1.8.0-alpha03）は、安定版がすべて除外されて更新されない。BOM は最新が安定版なので更新された（ADR-0003 の [PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)）。cooldown を外すか、Google Maven の依存を手で更新する必要がある。
+cooldown は 7 日に設定するが、Google Maven のプラグインには効かない。公開から 2 日の AGP 9.5.0 が提案された。ログは `Using POM Last-Modified fallback release dates for com.android.application from https://plugins.gradle.org/m2` と `Filtered out 0 version(s) due to cooldown` を出している。Plugin Portal は Maven Central へ 303 でリダイレクトし、Central は 404 を返すが、その応答に `Last-Modified: Sat, 11 Oct 2025` が付いている。[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/package/version_release_date_fallback_fetcher.rb)は status を確認せずにこの値を公開日として使う。ライブラリの除外は公開日に関係しない。結果と対処は「cooldown と Google Maven のライブラリ」に書く。
 
 比較した案:
 
@@ -357,6 +358,23 @@ off の効果は信頼の範囲ではなく、`verify` の決定性にある。�
 | `failOnNonReproducibleResolution()` か依存のロック | 対象外 | ADR-0003 の論点 8 で比較した。記事の BouncyCastle の版の範囲の例は、metadata が更新と無関係に壊れる原因になる |
 | `org.gradlex.jvm-dependency-conflict-resolution` | 不採用 | lab の依存は少なく、検証の対象の plugin が増える。rss-reader で依存の重複が問題になれば見直す |
 
+## cooldown と Google Maven のライブラリ
+
+[Dependabot options reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference) によれば、version update には `cooldown` を設定しなくても既定で 3 日の cooldown が適用される（`Apply a default cooldown period of 3 days to version updates, even when cooldown is not configured.`）。security update は対象外である（`This default cooldown does not apply to security updates.`、`The cooldown option is only available for version updates, not security updates.`）。`exclude` は `*` のワイルドカードに対応し、`include` より優先される。
+
+Google Maven のライブラリでは、公開日が `maven-metadata.xml` の最新の 1 バージョン分しか取れていない。ログの `Release date not available for version 1.13.0 - filtering out` のとおり、公開日の分からないバージョンは除外される。最新が pre-release の `androidx.activity:activity-compose`（1.14.0-alpha03）と `androidx.test:runner`（1.8.0-alpha03）は、安定版がすべて除外されて更新されない。BOM は最新が安定版なので更新される（[PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)）。
+
+catalog の `activity-compose` を 1.12.4、`androidx.test:runner` を 1.6.2、`software.amazon.awssdk:annotations` を 2.56.0 に下げて、設定ごとに実際のジョブを実行した。
+
+| `cooldown` の設定 | `activity-compose`、`androidx.test:runner` | `software.amazon.awssdk:annotations` | PR |
+| --- | --- | --- | --- |
+| `default-days: 7`、`exclude: androidx.*` | 除外 0 件で 1.13.0、1.7.0 に更新される | 5 バージョンを除外して 2.57.3（`cooldown days: 7`） | [PR #11](https://github.com/appachan/android-supply-chain-lab/pull/11) |
+| 設定なし | 26 バージョンが `Release date not available` で除外され、更新されない | 3 バージョンを除外して 2.57.5（`cooldown days: 3`） | [PR #12](https://github.com/appachan/android-supply-chain-lab/pull/12) |
+
+設定なしの結果のとおり、この問題は cooldown を外しても解決しない。既定の 3 日が同じ経路を通る。ジョブの定義には `cooldown` がないが、ログには `cooldown days: 3` が出る。
+
+対処として `androidx.*` を `exclude` に入れた。ジョブの定義に `"exclude":["androidx.*"]` として渡り、Maven Central の依存の cooldown は残る。代償として、androidx のバージョンは公開直後でも提案される。`androidx.*` に当たらない Google Maven のライブラリには、同じ問題が残る。
+
 ## 実際の PR での確認
 
 [PR #3](https://github.com/appachan/android-supply-chain-lab/pull/3) は AGP 9.5.0 と Gradle 9.8.2 のグループ更新である。鍵サーバーの検証の一時依存でグループの内容が変わり、Dependabot が PR #3 を閉じて PR #4 と PR #5 を作った。以下の順序 1 から 9 は PR #3 の記録で、最終の状態は末尾に書く。
@@ -414,6 +432,8 @@ Dependabot の PR の確認:
 
 `Regenerate` が失敗したときは、更新そのものがビルドできないので人が判断する。
 
+`Commit verification metadata` が `Branch not found` で失敗したときは、Dependabot が PR を置き換えてブランチを消した後の実行なので、対応は要らない。
+
 手元で metadata を変更するとき（依存を手で追加したときなど）:
 
 ```sh
@@ -433,7 +453,7 @@ GRADLE_USER_HOME="$(mktemp -d)" sh -c '
 
 rss-reader は読むだけで、まだ適用していない。
 
-- `dependabot.yml` がないので追加する
+- `dependabot.yml` がないので追加する。`cooldown` の `exclude` に `androidx.*` を入れる
 - `ci.yml` に `workflow_dispatch` を追加する。`verify` のジョブ名はそのままでよい
 - `concurrency` は `github.ref` で分かれている。dispatch と PR の run は ref が違うので互いに取り消さない想定だが、確認していない
 - `key-servers` の設定は lab と同じものを使う。`build-logic` と foojay の依存があるので、最初の生成で `ignored-key` がなくなるまで確認する
@@ -456,11 +476,13 @@ rss-reader は読むだけで、まだ適用していない。
 - 新しい成果物の初回の信頼は、人の確認に依存する。配布元が侵害されていれば再生成も同じものを記録する
 - グループ単位の鍵の信頼は、鍵が盗まれると新しい成果物も通す
 - Google Maven のプラグインには cooldown が効かない
-- 最新が pre-release の Google Maven のライブラリは、cooldown があると Dependabot が更新しない
+- `androidx.*` は cooldown の対象外なので、公開直後のバージョンも提案される
+- `androidx.*` に当たらない Google Maven のライブラリは、最新が pre-release だと Dependabot が更新しない
 - `verify` は鍵サーバーに依存しない。keyring の欠けは `verify` の失敗になる
 
 ## 未解決
 
+- Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない。PR の Approve workflows to run による再生成のやり直しも実際の PR では確認していない
 - [PR #1](https://github.com/appachan/android-supply-chain-lab/pull/1) の `@dependabot rebase` は `edited by someone other than Dependabot` で断られた。`[dependabot skip]` のない再生成のコミットがあるためと見られる。`[dependabot skip]` のあるコミットでの `@dependabot rebase` は確認していない
 - dispatch した `verify` が ruleset の必須チェックを満たすかは確認していない。check run は head の SHA にあり、app も 15368 で、`pull_requests` に PR が入っている。一方で、`statusCheckRollup` は空、`gh pr checks` は `no checks reported`、`mergeStateStatus` は `UNSTABLE` のままだった。`action_required` の check suite が同じ commit にあることが関係している可能性があるが、原因は分かっていない。lab には ruleset がないので merge の可否は判定できない。確認には lab に一時的な ruleset を設定し、Approve workflows to run の前後で比較する必要がある。満たさなければ、Approve workflows to run を人の手順にして `workflow_dispatch` をやめるか、GitHub App の token に切り替える

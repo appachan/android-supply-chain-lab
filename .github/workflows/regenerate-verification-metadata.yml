@@ -29,11 +29,12 @@ jobs:
           java-version: '17'
 
       # 検証なしで新しい依存のコードを実行するので、このジョブには書き込み権限を渡さない
-      # 1 回目は新しくダウンロードした POM の一部が記録されないので、2 回実行する
+      # 別のリポジトリの子から参照される BOM の POM は 1 回目に記録されないことがあるので、2 回実行する
+      # 理由は docs/adr/0002-dependency-verification.md を参照
       - name: Regenerate
         run: |
           ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
-          ./gradlew --write-verification-metadata pgp,sha256 --export-keys --rerun-tasks build
+          ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -55,15 +55,7 @@ sources と javadoc: 全成果物の sources と javadoc の取得を `ArtifactR
 
 plugin と buildscript: 検証の対象に含まれる。PR #1 の最初の失敗も buildscript の `classpath` で起きた。
 
-再生成は 2 回実行する。1 回目の再生成では、新しくダウンロードした POM の一部が記録されないことがある。PR #1 では `bc-jdk18on-bom-1.80.2.pom` が記録されず、再生成した commit の strict ビルドが失敗した（[run 41076964846](https://github.com/appachan/android-supply-chain-lab/actions/runs/41076964846)）。手元でも再現した。
-
-| 手順（空の `GRADLE_USER_HOME`、AGP 9.5.0） | 結果 |
-| --- | --- |
-| 再生成 1 回 | 6 行追加、続く strict は失敗 |
-| 再生成 2 回 | 11 行追加、空の環境の strict は成功 |
-| 再生成、strict、再生成 | 11 行追加、結果は再生成 2 回と同じ |
-
-原因の機構は Gradle のソースで確認していない。ドキュメントにも記述がない。2 回目は `--rerun-tasks` を付けて、実行時に解決する依存も再度通す。
+再生成は同じコマンドで 2 回実行する。原因と根拠は「2 回の再生成が必要な原因」に書く。
 
 手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。strict ビルドに使った環境で再生成すると、不要な行が 19 行追加された。macOS と Linux で同じ 19 行だったので、OS の差ではない。
 
@@ -173,6 +165,85 @@ ADR-0001 の配布物と違い、キャッシュ済みの依存も改ざんを�
 
 未知の依存の確認では、同時に追加した `commons-text` は失敗しなかった。`org.apache.commons` のグループを信頼する鍵で署名されているからである。グループ単位の信頼は、そのグループの新しい成果物を自動で受け入れる。
 
+## 2 回の再生成が必要な原因
+
+PR #1 では 1 回の再生成で `bc-jdk18on-bom-1.80.2.pom` の行が書かれず、再生成した commit の strict ビルドが失敗した（[run 41076964846](https://github.com/appachan/android-supply-chain-lab/actions/runs/41076964846)）。
+
+### 確認できた事実
+
+Gradle 9.7.1 の[ソース](https://github.com/gradle/gradle/tree/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts)から:
+
+- 親 POM と import した BOM は `ExternalResourceResolverDescriptorParseContext` で解決され、子の `sources` に追加される。`DependencyVerifyingModuleComponentRepository` は `sources` の各 POM について、子を解決したリポジトリの名前で `onArtifact` を呼ぶ
+- `.asc` はそのラッパーのリポジトリから取得する。コンテンツフィルターの対象外の group でも取得を試みる（下記のログ）
+- strict の `ChecksumAndSignatureVerificationOverride` は `(artifact, repositoryId)` で重複を除くので、同じ POM をリポジトリごとに検証する
+- writer の `WriteDependencyVerificationFile` は `LinkedHashSet` に `(id, kind, file)` で登録するので、リポジトリによらず最初の 1 件だけが残る
+
+lab の実物での観察:
+
+- Google Maven の `sdk-common-32.5.0.pom` が `bc-jdk18on-bom:1.80.2` を `dependencyManagement` で import している。この BOM は Maven Central にしかなく、`.pom.asc` と `.module` がある
+- 空の環境の strict のログ。Central から `.pom.asc` を取得したうえで、同じ POM の `.asc` を Google にも探して 404 になり、Google 経由の検証で失敗している
+
+```text
+Downloading https://repo.maven.apache.org/maven2/org/bouncycastle/bc-jdk18on-bom/1.80.2/bc-jdk18on-bom-1.80.2.pom.asc
+Resource missing. [HTTP GET: https://dl.google.com/dl/android/maven2/org/bouncycastle/bc-jdk18on-bom/1.80.2/bc-jdk18on-bom-1.80.2.pom.asc]
+One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc-jdk18on-bom:1.80.2) from repository Google
+```
+
+- `.asc` を探す先が 404 だったもののうち、Google のフィルターの対象外の group はこの 1 件だけだった
+- 再生成の 2 回目に書かれる行は `reason="Artifact is not signed"` だが、この POM は Central で署名されている。この記録は Google 経由の探索の結果であり、コミット本文の `[group has trusted keys: check for a dropped signature]` はこの場合は誤検知である
+- `--write-verification-metadata sha256` だけなら、空の環境の 1 回目で POM の行が書かれる。欠けるのは `pgp` を指定したときで、POM を見落としているのではない。ただし `verify-signatures` が `true` のままでは代わりにならない。この実行は 2246 行増え、未信頼の鍵で署名された groovy の 4 件で strict が失敗した
+
+実験の結果。AGP 9.5.0 への更新を、それぞれ空の `GRADLE_USER_HOME` で実行し、別の空の環境の strict で判定した。
+
+| 手順 | 追加行 | strict |
+| --- | --- | --- |
+| 再生成 1 回 | 6 | 失敗 |
+| `--refresh-dependencies` 付きで 1 回（2 回試行、結果は同一） | 6 | 失敗 |
+| 再生成 2 回、`--rerun-tasks` なし（2 回目は 6 秒） | 11 | 成功 |
+| 再生成 2 回、`--rerun-tasks` あり | 11 | 成功（上の行と同一のファイル） |
+| `help` で再生成、続けて `build` で再生成 | 11 | 成功 |
+
+Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict が成功した（[run 41160771357](https://github.com/appachan/android-supply-chain-lab/actions/runs/41160771357)）。更新のない `main` では、再生成しても `--refresh-dependencies` を付けても差分は 0 行だった。
+
+条件を分けた最小の再現。Gradle 9.7.1、子の POM を別のリポジトリに置き、本物の署名付き BOM を参照する。keyring は固定した。
+
+| 参照 | BOM | 子のリポジトリの `.asc` | 1 回目 | 2 回目 | 3 回目 |
+| --- | --- | --- | --- | --- | --- |
+| import | `.module` あり（bc） | なし | 失敗 | 失敗 | 失敗 |
+| parent | `.module` あり（bc） | なし | 失敗 | 失敗 | 失敗 |
+| import | `.module` あり（bc） | あり | 成功 | 成功 | 成功 |
+| parent | `.module` あり（bc） | あり | 成功 | 成功 | 成功 |
+| import | POM のみ（log4j-bom） | なし | 失敗 | 成功 | 成功 |
+| parent | POM のみ（log4j-bom） | なし | 失敗 | 成功 | 成功 |
+
+- 1 回目の失敗の条件は、親や BOM の POM が子とは別のリポジトリにあり、そのリポジトリに署名があって、子のリポジトリに `.asc` がないことである。`.asc` を置くことだけで失敗が消えた
+- import か parent かは関係しない。`.module` の有無も 1 回目の失敗の条件ではない
+- POM のみの BOM では親の POM（`logging-parent-7.pom`、`apache-27.pom`）も同じように失敗した
+- `.module` がある BOM は、最小の再現では 3 回実行しても揃わなかった。POM のハッシュを手で足すと strict は成功した
+
+### 推測
+
+- writer の登録は最初の 1 件が残るので、空の環境では親を解決した Central の経路が先に登録され、署名が有効なのでハッシュが不要と判断される。strict は Google の経路も別に検証するので、署名もハッシュもない状態で失敗する
+- 2 回目はキャッシュがあるので親の経路が通らず、子の経路だけが登録され、署名が見つからないのでハッシュが書かれる
+- `.module` の有無と実物の結果の違いから、この説明は完全ではない。最小の再現の `.module` ありの BOM では 2 回目に揃わないが、lab の実物は同じ BOM で揃う。BC のライブラリへの依存と buildscript の `classpath` を足しても再現しなかった
+
+### 公式の issue との関係
+
+- [#19228](https://github.com/gradle/gradle/issues/19228)（open）と [#20194](https://github.com/gradle/gradle/issues/20194)（open）は、親や BOM の POM が metadata から欠ける問題である。Gradle の開発者は、解析済みの descriptor がキャッシュにあると親をたどらないことが原因だと[説明している](https://github.com/gradle/gradle/issues/20194#issuecomment-1652095447)。欠ける向きは warm cache で、`--refresh-dependencies` で解消した[報告](https://github.com/gradle/gradle/issues/19228)がある
+- lab の現象は別の原因である。空の環境で起き、`--refresh-dependencies` では直らず、`sha256` だけなら起きない。POM を見ていないのではなく、署名が有効と判断された結果ハッシュが書かれない。#20194 には空の `GRADLE_USER_HOME` でも起きるという[報告](https://github.com/gradle/gradle/issues/20194)があり、同じ現象の可能性があるが、再現手順がないので確認していない
+- [#24948](https://github.com/gradle/gradle/issues/24948)（open）は、親 POM の `<pgp>` と `trusted-key` が非決定的に変わる報告である。手元の strict の後に増えた 19 行は同じ形だが、関係は確認していない
+- 同じ原因の issue は見つけられなかった。[#33500](https://github.com/gradle/gradle/issues/33500) は PR ではなく open の issue で、#19228 の troubleshooting の追加を求めている。現在の[公式ドキュメント](https://docs.gradle.org/current/userguide/dependency_verification.html)にはキャッシュの状態と `--refresh-dependencies` の記述がない
+
+### 一般的な運用例
+
+公開リポジトリでは `--refresh-dependencies` が多い。[Adyen](https://github.com/Adyen/adyen-android/blob/main/.github/workflows/update_verification_metadata.yml)、[Airflow](https://github.com/apache/airflow/blob/main/scripts/ci/prek/regenerate_java_sdk_verification_metadata.py)、[Besu](https://github.com/besu-eth/besu/blob/main/README.md)、[RSKj](https://github.com/rsksmart/rskj/blob/master/scripts/update-verification-metadata.sh)、[keycloak-mock](https://github.com/TNG/keycloak-mock/blob/main/.github/workflows/update-verification-metadata.yml) はいずれも `sha256` だけで、キャッシュがある前提の対策である。[AndroidX](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` で `--clean` を使い #19228 をコメントで参照している。[Renovate](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/gradle/artifacts.ts) は `--write-verification-metadata <hashTypes> dependencies` を 1 回実行する。[Dependabot で署名も使う例](https://github.com/SimonMarquis/Android-Playground/blob/main/.github/workflows/dependabot-gradle-dependencies.yaml)も 1 回である。`pgp,sha256` を 2 回実行する例は見つけられなかった。`--refresh-dependencies` が効くのは `sha256` の運用で、`pgp` の lab では効かないので、結果は矛盾しない。
+
+### 採用する手順
+
+同じコマンドを空の環境で 2 回実行する。`--rerun-tasks` は結果が変わらないので使わない。`--refresh-dependencies` は空の環境では効果がないので使わない。
+
+2 回で揃う保証はない。最終的な判定は空の環境の `verify` であり、欠けていれば失敗する側に倒れる。`verify` が `.pom` で失敗し、`from repository` が親の配布元と違うときは、配布元の `.asc` で署名を確認してから、その POM の sha256 を metadata に手で足す。
+
 ## 実際の PR での確認
 
 [PR #3](https://github.com/appachan/android-supply-chain-lab/pull/3) は AGP 9.5.0 と Gradle 9.8.2 のグループ更新である。
@@ -210,7 +281,8 @@ Dependabot の PR の確認:
 4. Kotlin の互換性の表で版の範囲を確認する
 5. wrapper の更新があれば、`gradlew` と `gradlew.bat` の diff を確認する
 6. `Rejected` で `Commit` が失敗したときは merge しない。原因を調べるまで再生成しない
-7. `verify` の成功を確認して merge する。必須チェックとして認識されないときは Approve workflows to run で PR の `verify` を実行する
+7. `verify` が `.pom` で失敗したら、「2 回の再生成が必要な原因」の手順で確認する
+8. `verify` の成功を確認して merge する。必須チェックとして認識されないときは Approve workflows to run で PR の `verify` を実行する
 
 `Regenerate` が失敗したときは、更新そのものがビルドできないので人が判断する。
 
@@ -219,7 +291,7 @@ Dependabot の PR の確認:
 ```sh
 GRADLE_USER_HOME="$(mktemp -d)" sh -c '
   ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
-  ./gradlew --write-verification-metadata pgp,sha256 --export-keys --rerun-tasks build
+  ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
 '
 ```
 
@@ -246,7 +318,7 @@ rss-reader は読むだけで、まだ適用していない。
 ## Consequences
 
 - 依存の更新で、人が見る差分が新しい鍵と無署名の成果物に絞られる
-- Dependabot の PR ごとに `Regenerate` が 2 回ビルドする
+- Dependabot の PR ごとに `Regenerate` が再生成を 2 回実行する。2 回目はタスクが最新なので短い
 - CI の `verify` の成功は metadata の一貫性だけを示す。承認の根拠にしない
 - 新しい成果物の初回の信頼は、人の確認に依存する。配布元が侵害されていれば再生成も同じものを記録する
 - グループ単位の鍵の信頼は、鍵が盗まれると新しい成果物も通す
@@ -257,4 +329,4 @@ rss-reader は読むだけで、まだ適用していない。
 - dispatch した `verify` が ruleset の必須チェックを満たすかは確認していない。check run は head の SHA にあり、app も 15368 で、`pull_requests` に PR が入っている。一方で、`statusCheckRollup` は空、`gh pr checks` は `no checks reported`、`mergeStateStatus` は `UNSTABLE` のままだった。`action_required` の check suite が同じ commit にあることが関係している可能性があるが、原因は分かっていない。lab には ruleset がないので merge の可否は判定できない。確認には lab に一時的な ruleset を設定し、Approve workflows to run の前後で比較する必要がある。満たさなければ、Approve workflows to run を人の手順にして `workflow_dispatch` をやめるか、GitHub App の token に切り替える
 - 実際の ruleset の下での署名の確認はしていない。`verified: true` までの確認である
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める
-- 2 回の再生成が必要な原因は Gradle の実装で確認していない
+- `.module` のある BOM が lab の実物では 2 回で揃い、最小の再現では揃わない理由は確認していない

@@ -281,7 +281,11 @@ Gradle 9.7.1 の dependency-management の jar に計測のログを足した配
 - [#19228](https://github.com/gradle/gradle/issues/19228)（open）と [#20194](https://github.com/gradle/gradle/issues/20194)（open）は、親や BOM の POM が metadata から欠ける問題である。Gradle の開発者は、解析済みの descriptor がキャッシュにあると親をたどらないことが原因だと[説明している](https://github.com/gradle/gradle/issues/20194#issuecomment-1652095447)。欠ける向きは warm cache で、`--refresh-dependencies` で解消した[報告](https://github.com/gradle/gradle/issues/19228)がある
 - lab の現象は別の原因である。空の環境で起き、`--refresh-dependencies` では直らず、`sha256` だけなら起きない。POM を見ていないのではなく、署名が有効と判断された結果ハッシュが書かれない。#20194 には空の `GRADLE_USER_HOME` でも起きるという[報告](https://github.com/gradle/gradle/issues/20194)があり、同じ現象の可能性があるが、再現手順がないので確認していない
 - [#24948](https://github.com/gradle/gradle/issues/24948)（open）は、親 POM の `<pgp>` と `trusted-key` が非決定的に変わる報告である。手元の strict モードのビルドの後に増えた 19 行は同じ形だが、関係は確認していない
-- 同じ原因の issue は見つけられなかった。[#33500](https://github.com/gradle/gradle/issues/33500) は PR ではなく open の issue で、#19228 の troubleshooting の追加を求めている。現在の[公式ドキュメント](https://docs.gradle.org/current/userguide/dependency_verification.html)にはキャッシュの状態と `--refresh-dependencies` の記述がない
+- 原因まで同じと言える issue は見つけられなかった。もっとも近いのは #20194 で、[空の `GRADLE_USER_HOME` でも起きるという報告](https://github.com/gradle/gradle/issues/20194#issuecomment-2451918741)は「子の処理中に親の何かがキャッシュされるのでは」と推測している。これは仕組み 1 の説明になっている可能性があるが、その報告に再現手順がなく、同じ条件かは確認していない。`.asc` の repository の違いに触れた issue は見つからなかった
+- 仕組み 2 の報告は見つからなかった。[#24948](https://github.com/gradle/gradle/issues/24948) の `oss-parent` の信頼する鍵の行は、仕組み 2 の実行で増える行と同じ形だが、同じ原因かは確認していない。[#19228](https://github.com/gradle/gradle/issues/19228) はキャッシュがあると行が減る報告で、仕組み 2 の増える向きとは逆である。[#38503](https://github.com/gradle/gradle/issues/38503) は #19228 の重複として閉じられた。[#32632](https://github.com/gradle/gradle/issues/32632) と [#18569](https://github.com/gradle/gradle/issues/18569) は `pgp` と checksum の両方を書くかという別の話である
+- [#19228 の 2026 年の報告](https://github.com/gradle/gradle/issues/19228#issuecomment-5256639663)は `sha256` だけの再生成で、`--refresh-dependencies` が効く。lab の現象とは別である
+- 検索した語は、`verification-metadata` と parent pom、BOM、repository、signature、`.asc` の組み合わせのほか、`ModuleComponentFileArtifactIdentifier`、`DefaultModuleComponentArtifactIdentifier`、`WriteDependencyVerificationFile`、`DependencyVerifyingModuleComponentRepository`、`ChecksumAndSignatureVerificationOverride`、`entriesToBeWritten`、`VerificationEntry`、`PgpEntry` である。2 つの id のクラスと writer の問題を結びつけた報告はなかった
+- [#33500](https://github.com/gradle/gradle/issues/33500) は PR ではなく open の issue で、#19228 の troubleshooting の追加を求めている。現在の[公式ドキュメント](https://docs.gradle.org/current/userguide/dependency_verification.html)にはキャッシュの状態と `--refresh-dependencies` の記述がない
 
 ### 一般的な運用例
 
@@ -305,7 +309,15 @@ AGP 9.5.0 の更新で、前段を変えて比べた。すべて未改変の Gra
 
 前段が再生成なら writer が全 configuration を解決するので、2 回目はすべてキャッシュから読まれ、仕組み 2 が起きない。前段が通常のビルドだと部分的なキャッシュになり、余分な行が入る。`--dry-run` を前段にしても速くならない。機械が空いた状態で、再生成 2 回は 196 秒、`--dry-run` を前段にすると 245 秒だった。
 
-したがって `scripts/regenerate-dependency-metadata.sh` は変えない。
+`help` を前段にする案も、空の環境で 1 つずつ順番に測った。
+
+| 更新 | 再生成 2 回 | `help` が前段 | 結果の比較 | `help` が前段の検証 |
+| --- | --- | --- | --- | --- |
+| AGP 9.5.0 | 169、210、165 秒（平均 181 秒） | 174、174、174 秒 | 同一 | 成功 |
+| okhttp の追加 | 212 秒 | 194 秒 | 同一 | 成功 |
+| Compose BOM 2026.08.00 への変更 | 183 秒 | 190 秒 | 同一 | 成功 |
+
+結果の比較は metadata、keyring、全 module の lockfile のバイト単位の比較である。再生成 2 回の差は 2 回目の時間のばらつき（7 秒から 36 秒）で生じていて、平均の差はこの範囲に収まる。`help` を前段にしても意味のある短縮はないので、`scripts/regenerate-dependency-metadata.sh` は変えない。`help` の利点は時間が安定することで、欠点は 1 回目でビルドの失敗を検出できず、失敗の検出が 2 回目まで遅れることである。okhttp と BOM の時間は 1 回ずつの測定である。
 
 2 回で揃う保証はない。最終的な判定は空の環境の `verify` であり、欠けていれば失敗する側に倒れる。`verify` が `.pom` で失敗し、`from repository` が親の配布元と違うときは、配布元の `.asc` で署名を確認してから、その POM の sha256 を metadata に手で足す。
 
@@ -350,7 +362,14 @@ okhttp 4.12.0 を `:app` の `implementation` に足して比べた。検証は�
 
 公開の依存だけで、未改変の Gradle 9.7.1 で再現する。どちらも `gradle/verification-metadata.xml` に鍵サーバーの設定だけを書いた状態から始める。
 
-再現 1（仕組み 1）: `repo/sclab/child/1.0/child-1.0.pom` に `log4j-bom:2.24.3` を import する POM を置き、`settings.gradle.kts` に `maven { url = uri("repo"); content { includeGroup("sclab") } }` と `mavenCentral()` を書く。`implementation("sclab:child:1.0")` の `runtimeClasspath` を解決するタスクで、空の `GRADLE_USER_HOME` で再生成する。別の空の環境の検証は `3 artifacts failed verification` で失敗し、同じ環境でもう 1 回再生成すると成功する。ファイルのリポジトリの子は毎回解析されるので、この再現の 2 回目のハッシュは仕組み 2 の形で書かれる。
+再現 1（仕組み 1）: `sclab:child:1.0` の POM を HTTP で配信する。POM は `log4j-bom:2.24.3` を import し、`.asc` は置かない。`settings.gradle.kts` に `maven { url = uri("http://127.0.0.1:18791"); isAllowInsecureProtocol = true; content { includeGroup("sclab") } }` と `mavenCentral()` を書き、`implementation("sclab:child:1.0")` の `runtimeClasspath` を解決するタスクで再生成する。
+
+| 実行 | `log4j-bom-2.24.3.pom` の最初の登録 | `.asc` | 書かれた行 | 別の空の環境の検証 |
+| --- | --- | --- | --- | --- |
+| 1 回目 | Maven Central | 成功 | なし | 失敗（`3 artifacts failed verification ... from repository child`） |
+| 2 回目 | `child` | 404 | `reason="Artifact is not signed"` のハッシュ | 成功 |
+
+id の混在は両方の実行で 0 件で、`reason` のないハッシュも 0 件である。1 回目の id はすべて `Default`（25 件）、2 回目はすべて `File`（16 件）だった。ファイルのリポジトリで子を置くと毎回解析されるので、2 回目のハッシュは仕組み 2 の形で書かれる。仕組み 1 だけを確かめるには HTTP で配信する。
 
 再現 2（仕組み 2）: configuration `first` に `com.google.guava:failureaccess:1.0.1`、`second` に `com.google.guava:listenablefuture:1.0` を宣言する。どちらも親は `guava-parent:26.0-android` である。`first` だけを解決するタスクを `--dependency-verification off` で実行し、同じ環境で再生成すると、`guava-parent` に `reason` のないハッシュが書かれる。空の環境の再生成では行は 0 件である。どちらの metadata でも検証は成功する。
 

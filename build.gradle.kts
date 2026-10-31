@@ -7,4 +7,13 @@ plugins {
     alias(libs.plugins.compose.compiler) apply false
 }
 
-allprojects { apply(from = rootProject.file("gradle/resolved-versions.gradle.kts")) }
+// lock と failOn は同じ configuration で併用できない。理由は docs/adr/0003-version-resolution.md を参照
+subprojects {
+    configurations.configureEach {
+        if (name.endsWith("CompileClasspath", ignoreCase = true) || name.endsWith("RuntimeClasspath", ignoreCase = true)) {
+            resolutionStrategy.activateDependencyLocking()
+        } else {
+            resolutionStrategy.failOnNonReproducibleResolution()
+        }
+    }
+}

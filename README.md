@@ -37,4 +37,4 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 ./gradlew build
 ```
 
-`build` は `checkResolvedVersions` を含み、`gradle/libs.versions.toml` の宣言と解決結果がズレていると失敗する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
+`app/gradle.lockfile` と異なる版が解決されるとビルドが失敗する。意図した変更なら `./gradlew :app:dependencies --write-locks` で更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。

@@ -417,6 +417,28 @@ head は [5258a71](https://github.com/appachan/android-supply-chain-lab/commit/5
 
 [PR #1](https://github.com/appachan/android-supply-chain-lab/pull/1) は `[dependabot skip]` のない再生成のコミットがあるので、`@dependabot rebase` は `edited by someone other than Dependabot` で断られた。`@dependabot recreate` では、`Looks like com.android.application is updatable in another way, so this is no longer needed.` として Dependabot が close した。グループの更新があるので、個別の PR は作り直されない。
 
+`[dependabot skip]` のある再生成のコミットを持つ [PR #13](https://github.com/appachan/android-supply-chain-lab/pull/13) では、`@dependabot rebase` の 1 回目は `Looks like this PR is already up-to-date with main!` と返された。main を進めた後の 2 回目は 20 分以上反応がなく、Dependabot のジョブも起動しなかった。再生成のコミットが rebase でどう扱われるかは分かっていない。
+
+### ruleset の下での判定
+
+main に rss-reader の `default` と同じ ruleset（id 26267113）を設定した。`deletion`、`non_fast_forward`、`required_signatures`、`pull_request`、`required_status_checks` で、`bypass_actors` はない。
+
+PR #13 の head の 2ce8f59 は再生成のコミットで、その後に手動で起動した CI（[run 41190375435](https://github.com/appachan/android-supply-chain-lab/actions/runs/41190375435)）の `verify` が成功している。この状態の判定は次のとおりである。
+
+| 確認 | 結果 |
+| --- | --- |
+| `mergeStateStatus`、`mergeable` | `BLOCKED`、`MERGEABLE` |
+| REST の `mergeable_state` | `blocked` |
+| `verify` の check run | `SUCCESS`、`isRequired: true`、app 15368、`pull_requests` に PR あり |
+| `statusCheckRollup`、`gh pr checks --required` | 空、`no checks reported` |
+| 同じ commit の `pull_request` の check suite | `CI` と `Regenerate verification metadata` が `ACTION_REQUIRED` |
+| 署名 | 73718f0、2ce8f59 とも `verified: true`、`reason: valid` |
+| `reviewDecision` | null（レビューの要求なし） |
+
+`BLOCKED` の理由の文面は取得できなかった。公開の GraphQL に `mergeRequirements` はなく、rule suite は merge の試行がないので記録がない。
+
+消去法では必須チェックが残る。署名は有効で、`required_approving_review_count` は 0 である。`require_extra_approval_for_unattributed_changes` は [REST API の説明](https://github.com/github/rest-api-description)によれば `When Copilot opens a pull request without a human collaborator, require one more approving review if a non-zero approval count is required.` なので、Dependabot の PR で承認数 0 の lab には当たらないと読める。手動で起動した `verify` は必須として認識されるが、merge の判定には数えられていない可能性がある。これは推測で、実際に merge を試すか、Approve workflows to run で `pull_request` の `verify` を実行すれば確かめられる。どちらも行っていない。
+
 ### lockfile を含む PR
 
 ADR-0003 の方式を main に merge した後の PR で、再生成のコミットの `verified` は [PR #6](https://github.com/appachan/android-supply-chain-lab/pull/6)、[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7)、[PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)、[PR #9](https://github.com/appachan/android-supply-chain-lab/pull/9) のすべてで `true` だった。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) は 3 つの lockfile を含む。結果の一覧は ADR-0003 の論点 9 にある。
@@ -488,8 +510,8 @@ rss-reader は読むだけで、まだ適用していない。
 
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない。PR の Approve workflows to run による再生成のやり直しも実際の PR では確認していない
-- `[dependabot skip]` のあるコミットでの `@dependabot rebase` は確認していない
-- dispatch した `verify` が ruleset の必須チェックを満たすかは確認していない。check run は head の SHA にあり、app も 15368 で、`pull_requests` に PR が入っている。一方で、`statusCheckRollup` は空、`gh pr checks` は `no checks reported`、`mergeStateStatus` は `UNSTABLE` のままだった。`action_required` の check suite が同じ commit にあることが関係している可能性があるが、原因は分かっていない。lab には ruleset がないので merge の可否は判定できない。確認には lab に一時的な ruleset を設定し、Approve workflows to run の前後で比較する必要がある。満たさなければ、Approve workflows to run を人の手順にして `workflow_dispatch` をやめるか、GitHub App の token に切り替える
-- 実際の ruleset の下での署名の確認はしていない。`verified: true` までの確認である
+- `[dependabot skip]` のあるコミットでの `@dependabot rebase` の結果は確認できていない。main を進めた後のコメントに Dependabot が反応しなかった
+- 手動で起動した `verify` が ruleset の必須チェックを満たすかは確定していない。PR #13 は `BLOCKED` で、理由の文面は取得できなかった（「ruleset の下での判定」）。`action_required` の check suite が同じ commit にあることが関係している可能性がある
+- ruleset の下で再生成のコミットが merge できるかは確認していない。`required_signatures` については 2 つのコミットとも `verified: true` までの確認である
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める
 - `.module` のある BOM が lab の実物では 2 回で揃い、最小の再現では揃わない理由は確認していない

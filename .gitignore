@@ -9,3 +9,4 @@ build/
 .cxx
 local.properties
 .claude/
+settings-gradle.lockfile

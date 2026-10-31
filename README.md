@@ -15,7 +15,17 @@ Android アプリのサプライチェーンリスクに対する理想の運用
 
 ## 構成
 
-単一の `:app` モジュールからなる最小の Android アプリ。Kotlin と Jetpack Compose を使い、依存の版は `gradle/libs.versions.toml` で管理する。
+Kotlin と Jetpack Compose を使う最小の Android アプリ。依存の版は `gradle/libs.versions.toml` で管理する。
+
+| module | 種類 |
+| --- | --- |
+| `:app` | アプリ |
+| `:feature:greeting` | Android library |
+| `:shared:ui` | Android library |
+| `:shared:domain` | Kotlin JVM |
+| `build-logic` | convention plugin の included build |
+
+モジュールは [rss-reader](https://github.com/appachan/rss-reader) と同じ種類の構成を確かめるためのもので、中身は最小限にしている。
 
 | 項目 | 版 |
 | --- | --- |
@@ -37,6 +47,6 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 ./gradlew build
 ```
 
-`app/gradle.lockfile` と異なる版が解決されるとビルドが失敗する。意図した変更なら `./gradlew :app:dependencies --write-locks` で更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
+各 module の `gradle.lockfile` と異なる版が解決されるとビルドが失敗する。意図した変更なら `./gradlew --write-locks build` で全 module を更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
 
 依存を変えたときは、ADR-0002 の手順で `gradle/verification-metadata.xml` を更新する。

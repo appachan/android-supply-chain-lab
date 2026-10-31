@@ -413,6 +413,10 @@ Dependabot が force-push したあとも、同じ流れが自動で再開した
 
 head は [5258a71](https://github.com/appachan/android-supply-chain-lab/commit/5258a71617e065b1706cc0c0e59f853af429b125) で、`verified: true`、PR は `MERGEABLE`、metadata の差分は 11 行である。
 
+### 古い PR の扱い
+
+[PR #1](https://github.com/appachan/android-supply-chain-lab/pull/1) は `[dependabot skip]` のない再生成のコミットがあるので、`@dependabot rebase` は `edited by someone other than Dependabot` で断られた。`@dependabot recreate` では、`Looks like com.android.application is updatable in another way, so this is no longer needed.` として Dependabot が close した。グループの更新があるので、個別の PR は作り直されない。
+
 ### lockfile を含む PR
 
 ADR-0003 の方式を main に merge した後の PR で、再生成のコミットの `verified` は [PR #6](https://github.com/appachan/android-supply-chain-lab/pull/6)、[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7)、[PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)、[PR #9](https://github.com/appachan/android-supply-chain-lab/pull/9) のすべてで `true` だった。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) は 3 つの lockfile を含む。結果の一覧は ADR-0003 の論点 9 にある。
@@ -484,7 +488,7 @@ rss-reader は読むだけで、まだ適用していない。
 
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない。PR の Approve workflows to run による再生成のやり直しも実際の PR では確認していない
-- [PR #1](https://github.com/appachan/android-supply-chain-lab/pull/1) の `@dependabot rebase` は `edited by someone other than Dependabot` で断られた。`[dependabot skip]` のない再生成のコミットがあるためと見られる。`[dependabot skip]` のあるコミットでの `@dependabot rebase` は確認していない
+- `[dependabot skip]` のあるコミットでの `@dependabot rebase` は確認していない
 - dispatch した `verify` が ruleset の必須チェックを満たすかは確認していない。check run は head の SHA にあり、app も 15368 で、`pull_requests` に PR が入っている。一方で、`statusCheckRollup` は空、`gh pr checks` は `no checks reported`、`mergeStateStatus` は `UNSTABLE` のままだった。`action_required` の check suite が同じ commit にあることが関係している可能性があるが、原因は分かっていない。lab には ruleset がないので merge の可否は判定できない。確認には lab に一時的な ruleset を設定し、Approve workflows to run の前後で比較する必要がある。満たさなければ、Approve workflows to run を人の手順にして `workflow_dispatch` をやめるか、GitHub App の token に切り替える
 - 実際の ruleset の下での署名の確認はしていない。`verified: true` までの確認である
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める

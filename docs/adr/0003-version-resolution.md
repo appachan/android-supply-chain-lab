@@ -24,7 +24,7 @@ Accepted
 検知を基本にし、固定は例外にする。
 
 1. `checkResolvedVersions` を `check` に組み込み、catalog の宣言と解決結果のズレで CI を失敗させる（[gradle/resolved-versions.gradle.kts](../../gradle/resolved-versions.gradle.kts)）
-2. `failOnNonReproducibleResolution()` を全 configuration と plugin の classpath に設定し、動的な版と changing な版を禁止する
+2. `failOnNonReproducibleResolution()` を全 project の configuration と root の plugin の classpath に設定し、動的な版と changing な版を禁止する。推移的依存にも効くが、subproject、settings、included build の classpath には届かないので、それらを使うときは[個別に設定する](#failonnonreproducibleresolution-と推移的依存)
 3. dependency locking は採用しない
 4. `strictly`、`enforcedPlatform` は常用しない。推移的依存を上げる必要があるときは、catalog の項目と `constraints` を使う
 5. ズレを検知したら、原因を確認して catalog を解決結果に合わせて上げる。上げても解決結果は変わらない。合わせられない理由があるときだけ固定を検討する
@@ -118,7 +118,7 @@ E7 の固定は Gradle が行う。[`EmbeddedKotlinProvider`](https://github.com
 | `strictly` | 固定（M1）。失敗はコンパイル時まで出ない | 引き起こす側 | なし | 依存ごとに宣言 | catalog の plugin では効かない。`classpath` に直接書くと解決が失敗 |
 | `require` / `prefer` | 効果なし（M2） | 効果なし | なし | 依存ごとに宣言 | 効果なし |
 | `failOnVersionConflict()` | 検知 | 検知しない | 多い。lab で `debugRuntimeClasspath` 44 module、plugin の classpath 18 module、rss-reader で 97 module | `configurations.configureEach` で全体に適用できるが、全部失敗する | `buildscript` の `configurations.classpath` に設定 |
-| `failOnChangingVersions()` と `failOnDynamicVersions()` | 効果なし（M4） | 効果なし | なし（lab、rss-reader とも `build` 成功） | `configurations.configureEach` で全体に適用できる | 同左 |
+| `failOnChangingVersions()` と `failOnDynamicVersions()` | 効果なし（M4） | 効果なし | なし（lab、rss-reader とも `build` 成功）。ただし結果が変わらない組み合わせでも失敗する場合がある（M7） | `configurations.configureEach` で全体に適用できる | 同左 |
 | dependency locking | 変化を検知。lock 作成時に既にあるズレは記録されるだけ | catalog を lock より下げても黙って lock の版になる | なし | `lockAllConfigurations()` で全体に適用。lint、UTP、Kotlin compiler の configuration も lock され、lab で 303 行、rss-reader で計 4,739 行 | 別に宣言が必要。`buildscript-gradle.lockfile` が増える |
 | BOM / `platform` | 効果なし。BOM を超えて上がる（M6） | 効果なし | なし | 宣言した configuration の範囲 | 効果なし |
 | `enforcedPlatform` | 固定。ただしビルドが壊れた（M6） | 引き起こす側 | なし | 宣言した configuration の範囲 | 未確認 |
@@ -171,6 +171,87 @@ Duplicate class androidx.compose.runtime.StableMarker found in modules runtime-a
 
 [`enforcedPlatform`](https://docs.gradle.org/9.7.1/userguide/platforms.html) は依存グラフの版を上書きするので注意が必要とされている。[Compose BOM](https://developer.android.com/develop/ui/compose/bom) は版の対応表で、個別のライブラリに版を指定して上書きできる。
 
+### failOnNonReproducibleResolution() と推移的依存
+
+M7: 結論として、推移的依存にも効く。POM と Gradle Module Metadata（GMM）のどちらでも、ライブラリと root の plugin の classpath のどちらでも同じ結果だった。設定した configuration のグラフの中では、結果が変わり得るのに通過した組み合わせはなかった。すり抜けるのは、設定が届かない configuration である。
+
+[`failOnNonReproducibleResolution()` の Javadoc](https://docs.gradle.org/9.7.1/javadoc/org/gradle/api/artifacts/ResolutionStrategy.html#failOnNonReproducibleResolution()) は「resolution result」としか書いていないが、[`failOnDynamicVersions()` の Javadoc](https://docs.gradle.org/9.7.1/javadoc/org/gradle/api/artifacts/ResolutionStrategy.html#failOnDynamicVersions()) には判定の条件がある。
+
+> if the resolved dependency graph contains a module and that the versions participating in the selection of that module contain at least one dynamic version, then resolution will fail if the resolution result can change because of this version selector.
+
+判定の対象は宣言ではなくグラフの module である。これは推移的依存が含まれることと、後述の項目 4、5 が通ることの説明になる。ただし推移的依存とは明記されていないので、下の実験で確かめた。[`failOnChangingVersions()` の Javadoc](https://docs.gradle.org/9.7.1/javadoc/org/gradle/api/artifacts/ResolutionStrategy.html#failOnChangingVersions()) は「no changing version participates in resolution」とだけ書いている。
+
+実装は [`DependencyGraphBuilder` の `validateDynamicSelectors`](https://github.com/gradle/gradle/blob/92f0512e7f06d84621afba191f75e265363890cf/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/resolveengine/graph/builder/DependencyGraphBuilder.java#L429-L464) である。selector がすべて動的なら失敗し、一部が動的なら、固定の selector が選択結果を受け入れ、かつ動的な selector がすべて `canBeStable` のときだけ通す。ソースのコメントでは、`canBeStable` になるのは現在は範囲だけである。Gradle の統合テストにも[推移的依存の場合](https://github.com/gradle/gradle/blob/92f0512e7f06d84621afba191f75e265363890cf/platforms/software/dependency-management/src/integTest/groovy/org/gradle/integtests/resolve/reproducibility/FailOnDynamicVersionsResolveIntegrationTest.groovy#L101-L131)がある。
+
+実験の条件:
+
+- scratchpad に lab（763eebb）のコピーを作り、`python -m http.server` で偽の Maven リポジトリを配信した。`maven-metadata.xml` と、SNAPSHOT は unique な版を置いた。file リポジトリではなく HTTP にしたのは、動的な版のキャッシュを実際の動作に合わせるためである
+- 直接依存 `d:1.0` が推移的依存 `t` を指定する。`t` の版は 1.0、1.2、1.5、1.9、2.5。GMM の場合は POM に依存を書かず、GMM が読まれたことを結果で確かめた
+- plugin の classpath は、marker の POM から `d` を経由して `t` に至る fake plugin を root の `plugins` に `apply false` で宣言した
+- 1 項目につき POM と GMM、ライブラリと plugin の 4 通り（GMM だけの項目は 2 通り）、計 80 通りを実行した
+- 確認したのは、検査なし（`failOnNonReproducibleResolution()` を外す）の解決結果、`checkResolvedVersions`、`incoming.files` による解決である。項目内の結果は同じだったので、下の表は 1 行にまとめた
+- 実行後に `t` の 1.9.5 と 3.0（SNAPSHOT は build 2）を公開し、同じ入力で再度解決した。「キャッシュあり」はそのまま、「キャッシュなし」は `caches/modules-2` を消してデーモンを止めた状態で、CI のコールドスタートに相当する
+
+| 項目 | 指定 | 検査なしの版（初回、キャッシュあり、キャッシュなし） | 判定 | 失敗のメッセージ |
+| --- | --- | --- | --- | --- |
+| 1 | `[1.0,2.0)` | 1.9、1.9、1.9.5 | 失敗 | `Could not resolve t:[1.0,2.0): Resolution strategy disallows usage of dynamic versions` |
+| 1 | `[1.0,2.0)` と prefer 1.5（GMM のみ） | 1.5、1.5、1.5 | 失敗（結果は変わらない） | `Could not resolve t:{require [1.0,2.0); prefer 1.5}: ...dynamic versions` |
+| 2 | `1.+` | 1.9、1.9、1.9.5 | 失敗 | `Could not resolve t:1.+: ...dynamic versions` |
+| 2 | POM の `LATEST`、GMM の `latest.integration` | 2.5、2.5、3.0 | 失敗 | `Could not resolve t:latest.integration: ...dynamic versions`（POM の `LATEST` もこの表記になる） |
+| 2 | POM の `RELEASE`、GMM の `latest.release` | 2.5、2.5、3.0 | 失敗 | `Could not resolve t:latest.release: ...dynamic versions` |
+| 2 | GMM に `LATEST` をそのまま書く | 解決できない | 失敗（設定に関係なく） | `Could not find t:LATEST.`。GMM では動的な版として扱われない |
+| 3 | `1.0-SNAPSHOT` | build 1、build 1、build 2 | 失敗 | `Could not resolve t:1.0-SNAPSHOT: Resolution strategy disallows usage of changing versions` |
+| 3 | `1.0-SNAPSHOT`、直接 2.5 | 2.5、2.5、2.5 | 通過 | なし |
+| 4 | `[1.0,2.0)`、直接 2.5（範囲より上） | 2.5、2.5、2.5 | 通過 | なし |
+| 4 | `[1.0,2.0)`、直接 1.9（範囲内の最高） | 1.9、1.9、1.9 | 通過 | なし |
+| 4 | `[1.0,2.0)`、直接 1.5（範囲内） | 1.5、1.5、1.5 | 通過 | なし |
+| 4 | `[1.2,2.0)`、直接 1.0（範囲より下） | 1.9、1.9、1.9.5 | 失敗 | `Could not resolve t:1.0: ...dynamic versions`。固定の版が範囲に負けて、結果が時期で変わる |
+| 4 | `1.+`、直接 2.5 | 2.5、2.5、2.5 | 失敗（結果は変わらない） | `t:2.5` と `t:1.+` の両方が `...dynamic versions` |
+| 5 | `[1.0,2.0)`、`constraints` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+| 5 | `[1.0,2.0)`、`constraints` 2.5 | 2.5、2.5、2.5 | 通過 | なし |
+| 5 | `[1.0,2.0)`、`constraints` の `strictly` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+| 5 | `[1.0,2.0)`、直接の `strictly` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+| 5 | `1.+`、`constraints` の `strictly` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+| 5 | `[1.0,2.0)`、`force` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+| 5 | `1.+`、`force` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+| 5 | `1.+`、`eachDependency` の `useVersion` 1.5 | 1.5、1.5、1.5 | 通過 | なし |
+
+分かったこと:
+
+- 判定は時期で変わらなかった。全 80 通りで、新しい版の公開の前後、キャッシュの有無にかかわらず同じだった。通過した組み合わせは版も変わらなかった
+- 通過するのは、固定の selector が結果を決めている場合だけである。固定の版が範囲内にあれば、範囲の最高の版より低くてもその版が選ばれる
+- 結果が変わらないのに失敗するものが 2 種類ある。高い固定の版がある `1.+` と、prefer 付きの範囲である。安全側の失敗である
+- `1.+` が `strictly` で通るのは、祖先に strict があると [`EdgeState`](https://github.com/gradle/gradle/blob/92f0512e7f06d84621afba191f75e265363890cf/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/resolveengine/graph/builder/EdgeState.java#L104) がその edge の版を無視するからである
+- 失敗は実際のビルドでも起きる。項目 1 の POM とライブラリの組み合わせで `:app:assembleDebug` は同じメッセージで失敗し、`checkResolvedVersions` は `not resolved` と報告した。root の plugin の classpath の場合は configuration の段階で失敗するので、`help` を含むすべてのタスクが動かない
+- `dependencies` タスクは `t:[1.0,2.0) FAILED` と表示するが exit 0 で終わるので、検知には使えない
+- キャッシュがあると新しい版は反映されない。[既定で 24 時間キャッシュされる](https://docs.gradle.org/9.7.1/userguide/dependency_caching.html)ためで、キャッシュのない CI と手元で結果が分かれる原因になる
+
+設定が届かない経路では、推移的依存の動的な版はすり抜ける。範囲 `[1.0,2.0)` を指定した同じ構成を次の経路で使い、POM と GMM で確認した。
+
+| 経路 | 採用した設定のまま | 版（初回、キャッシュあり、キャッシュなし） | 対策 | 対策後 |
+| --- | --- | --- | --- | --- |
+| subproject の `plugins` に版付きで書いた plugin | 通過 | 1.9、1.9、1.9.5 | `gradle/resolved-versions.gradle.kts` に `if (!isRoot) project.buildscript.configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }` | 失敗 |
+| `settings.gradle.kts` の `plugins` | 通過 | 1.9、1.9、1.9.5 | `settings.gradle.kts` に `buildscript { configurations.all { resolutionStrategy.failOnNonReproducibleResolution() } }` | 失敗 |
+| included build（`build-logic`）の依存 | 通過 | 1.9、1.9、1.9.5 | included build の project に `configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }` | 失敗 |
+
+`apply(from = ...)` のスクリプトの中の `buildscript` はスクリプト自身の handler を指すので、subproject の対策には `project.buildscript` が必要である。`buildscript` のままでは通過した。
+
+対策と運用への影響:
+
+- lab には 3 経路のどれもないので、コードは変更しない。使い始めるときに上の設定を足す
+- rss-reader には settings の plugin と `build-logic` があるので、[適用の差分](#rss-reader-に適用するときの差分)に含める
+- ライブラリが動的な版の依存を公開すると、その更新の PR の CI が失敗する。範囲なら、catalog の項目と `constraints` で範囲内の版を宣言すると通る。既存の手順と同じである。宣言する版は、更新前に解決されていた版を基準に選ぶ
+- `1.+`、`latest.release` などは `constraints` の通常の宣言では通らないはずである（`1.+` と直接の 2.5 の結果と実装からの判断で、この組み合わせは実行していない）。`constraints` の `strictly` を使う。これは決定 4 の例外で、低い固定の危険があるので、解決結果の版に合わせ、理由をコメントに残す
+- 固定した版が古くなることは、この設定では検知されない。範囲の中に新しい版が出ても、固定の版のまま通過する
+
+確認していないこと:
+
+- 24 時間の経過は待っていない。キャッシュの削除で代用した
+- configuration cache は外して実行した
+- 別の版に負けてグラフから外れた component の依存が動的な場合は実行していない。Gradle の統合テストでは通過する。結果に関わらないためである
+- BOM の制約に書かれた動的な版と、Ivy のリポジトリ
+- Gradle のバージョンは 9.7.1 だけである。rss-reader のコピーは Gradle 9.1.0 で、対策が誤検知を起こさないことだけを確認した
+
 ### 自前の検査
 
 `checkResolvedVersions` はグラフだけを解決し、次の 3 種類の不一致で失敗する。
@@ -207,6 +288,7 @@ Duplicate class androidx.compose.runtime.StableMarker found in modules runtime-a
 - catalog に宣言していない推移的依存の変化
 - 依存として宣言されていない catalog の項目（S2）。依存に影響しないので害はない
 - settings の classpath、`build-logic` の classpath、detached configuration
+- catalog にない推移的依存の動的な版そのもの。ただし `failOnNonReproducibleResolution()` がグラフの失敗にするので、`not resolved` として報告される（M7）
 
 ## 論点 3: 検知と固定の使い分け
 
@@ -347,7 +429,29 @@ Dependabot の security updates は Gradle では dependency submission API の�
 
    `mockk` 1.14.3 が `junit-jupiter` 5.12.2 を経由して `junit-bom` 5.12.2 を要求し、`junit-vintage-engine` を上げている。7 module の `debugUnitTestRuntimeClasspath` で確認した。テストはすでに 5.12.2 で動いているので、解決結果は変わらない
 
-4. CI に step を足す。rss-reader の CI は `build` ではなく個別のタスクを実行しているので、`check` に組み込むだけでは実行されない
+4. settings の plugin と `build-logic` にも設定する。`allprojects` と root の `buildscript` は settings と included build の classpath に届かない（[M7](#failonnonreproducibleresolution-と推移的依存)）
+
+   ```diff
+   --- a/settings.gradle.kts
+   +++ b/settings.gradle.kts
+   +buildscript {
+   +    configurations.all { resolutionStrategy.failOnNonReproducibleResolution() }
+   +}
+    dependencyResolutionManagement {
+   --- a/build-logic/convention/build.gradle.kts
+   +++ b/build-logic/convention/build.gradle.kts
+   +buildscript {
+   +    configurations.classpath { resolutionStrategy.failOnNonReproducibleResolution() }
+   +}
+   +
+    plugins {
+        `kotlin-dsl`
+    }
+   +
+   +configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
+   ```
+
+5. CI に step を足す。rss-reader の CI は `build` ではなく個別のタスクを実行しているので、`check` に組み込むだけでは実行されない
 
    ```diff
    +      - name: Resolved versions
@@ -359,6 +463,7 @@ Dependabot の security updates は Gradle では dependency submission API の�
 
 - `./gradlew checkResolvedVersions` は差分 3 の前に上記の 1 件で失敗し、差分 3 の後に成功した
 - `./gradlew build --continue -x test` が成功した（743 タスク）。`failOnNonReproducibleResolution` による失敗はない
+- 差分 4 と subproject の対策（[M7](#failonnonreproducibleresolution-と推移的依存)）を足した新しいコピー（rss-reader 227fb9c）でも、`checkResolvedVersions`、`:build-logic:convention:classes`、上記の `build` が成功した。subproject の対策は今の rss-reader には不要である。subproject の build script に `version` 付きの plugin を書いていない
 - plugin の classpath は root の `plugins` に `apply false` で集まっているので検査できる。`rssreader.*` の convention plugin の classpath である `build-logic` と、settings の `foojay-resolver-convention` は検査の対象外
 - CI の `setup-gradle` は rss-reader の判断であり、この差分では変更しない
 
@@ -411,7 +516,9 @@ GitHub Actions では、`ci.yml` の trigger に一時ブランチを足すコ�
 ## Consequences
 
 - catalog の値と実際に使う版の不一致が、ライブラリ、BOM、plugin のどれでも CI で止まる
-- 動的な版と changing な版は使えない。SNAPSHOT を使う検証は一時的に設定を外す必要がある
+- 動的な版と changing な版は、推移的依存を含めて使えない。SNAPSHOT を使う検証は一時的に設定を外す必要がある
+- 結果が変わらない動的な版でも失敗する場合がある（`1.+` と高い固定の版など）。そのときは `constraints` の `strictly` を例外として使う
+- subproject、settings、included build の classpath は `failOnNonReproducibleResolution()` の対象外なので、使い始めるときに設定を足す
 - 検査は catalog に宣言した範囲だけを見る。推移的依存の変化は `verification-metadata.xml` に依存する
 - `apply(from = ...)` のスクリプトなので convention plugin より型の支援が弱いが、`build-logic` を持たないこのリポジトリと、持っている rss-reader の両方に同じファイルで適用できる
 - Gradle の embedded Kotlin の更新で plugin の classpath の `kotlin-stdlib` が変わることは検査しない

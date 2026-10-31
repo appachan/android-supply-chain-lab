@@ -6,16 +6,12 @@ updates:
       interval: weekly
       day: monday
     # androidx は公開日が取れず、安定版が更新されなくなるので対象外にする。docs/adr/0002-dependency-verification.md を参照
-    cooldown:
-      default-days: 7
-      exclude:
-        - 'androidx.*'
     # 全更新が verification-metadata.xml を変更するので、PR を分けると互いにコンフリクトする
     groups:
       gradle:
         patterns:
           - '*'
-    # temporary: cooldown experiment
+    # temporary: default cooldown experiment
     ignore:
       - dependency-name: gradle-wrapper
       - dependency-name: com.android.application

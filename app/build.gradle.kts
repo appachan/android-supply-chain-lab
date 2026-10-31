@@ -19,7 +19,6 @@ dependencies {
     implementation(project(":shared:ui"))
 
     implementation(libs.androidx.activity.compose)
-    implementation(libs.tmp.aws.annotations)
 
     testImplementation(libs.junit4)
 }

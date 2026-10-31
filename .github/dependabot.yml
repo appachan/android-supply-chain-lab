@@ -13,6 +13,7 @@ updates:
       gradle:
         patterns:
           - '*'
+    # temporary: library only experiment
     ignore:
       - dependency-name: gradle-wrapper
       - dependency-name: com.android.application

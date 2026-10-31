@@ -9,7 +9,6 @@ plugins {
 configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
 
 dependencies {
-    compileOnly("commons-lang:commons-lang:2.5")
     compileOnly(libs.android.gradle.plugin)
     compileOnly(libs.kotlin.gradle.plugin)
     compileOnly(libs.compose.compiler.gradle.plugin)

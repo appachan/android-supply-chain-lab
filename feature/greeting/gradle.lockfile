@@ -122,7 +122,6 @@ androidx.window:window:1.5.0=debugAndroidTestRuntimeClasspath,debugRuntimeClassp
 com.google.code.findbugs:jsr305:2.0.2=debugAndroidTestRuntimeClasspath
 com.google.guava:listenablefuture:1.0=debugAndroidTestCompileClasspath,debugAndroidTestRuntimeClasspath,debugRuntimeClasspath,debugUnitTestRuntimeClasspath,releaseRuntimeClasspath
 com.squareup:javawriter:2.1.1=debugAndroidTestRuntimeClasspath
-commons-io:commons-io:2.21.0=debugAndroidTestRuntimeClasspath,debugRuntimeClasspath,debugUnitTestRuntimeClasspath,releaseRuntimeClasspath
 javax.inject:javax.inject:1=debugAndroidTestRuntimeClasspath
 junit:junit:4.13.2=debugAndroidTestCompileClasspath,debugAndroidTestRuntimeClasspath
 org.hamcrest:hamcrest-core:1.3=debugAndroidTestCompileClasspath,debugAndroidTestRuntimeClasspath

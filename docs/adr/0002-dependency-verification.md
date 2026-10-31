@@ -359,7 +359,7 @@ off の効果は信頼の範囲ではなく、`verify` の決定性にある。�
 
 ## 実際の PR での確認
 
-[PR #3](https://github.com/appachan/android-supply-chain-lab/pull/3) は AGP 9.5.0 と Gradle 9.8.2 のグループ更新である。
+[PR #3](https://github.com/appachan/android-supply-chain-lab/pull/3) は AGP 9.5.0 と Gradle 9.8.2 のグループ更新である。鍵サーバーの検証の一時依存でグループの内容が変わり、Dependabot が PR #3 を閉じて PR #4 と PR #5 を作った。以下の順序 1 から 9 は PR #3 の記録で、最終の状態は末尾に書く。
 
 | 順序 | 内容 | 実行 |
 | --- | --- | --- |
@@ -383,6 +383,17 @@ Dependabot が force-push したあとも、同じ流れが自動で再開した
 最終の head は [467adc9](https://github.com/appachan/android-supply-chain-lab/commit/467adc9d7594cf4f948f0f8ffedb9a17fdf6c764) で、`verification.verified` は `true`、PR は `MERGEABLE` である。Linux で再生成したこの metadata で、macOS の空の環境の strict ビルドと sources の取得も成功した（順序 4 の commit `625d53c` で確認。metadata の変更は同じ 11 行）。
 
 `gradlew.bat` にも 41 行の追加がある。Gradle 9.8.2 の wrapper のテンプレートの変更に見えるが、wrapper validation は `gradlew.bat` を検証しないので、ADR-0001 のとおり diff で確認する。
+
+最終の状態は [PR #5](https://github.com/appachan/android-supply-chain-lab/pull/5) である。`key-servers` の設定と一時依存を外した `main` の上で、同じ流れが成功した。
+
+| 順序 | 内容 | 実行 |
+| --- | --- | --- |
+| 1 | Dependabot が PR を作成。`verify` は検証で失敗 | [run 41169783950](https://github.com/appachan/android-supply-chain-lab/actions/runs/41169783950) |
+| 2 | `Regenerate` が成功 | [run 41169783963](https://github.com/appachan/android-supply-chain-lab/actions/runs/41169783963) |
+| 3 | `Commit` が署名付きコミットを作成 | [run 41170000409](https://github.com/appachan/android-supply-chain-lab/actions/runs/41170000409) |
+| 4 | dispatch した `verify` が成功 | [run 41170011991](https://github.com/appachan/android-supply-chain-lab/actions/runs/41170011991) |
+
+head は [5258a71](https://github.com/appachan/android-supply-chain-lab/commit/5258a71617e065b1706cc0c0e59f853af429b125) で、`verified: true`、PR は `MERGEABLE`、metadata の差分は 11 行である。
 
 ## 運用手順
 

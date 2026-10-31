@@ -32,5 +32,5 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit4)
-    implementation("org.yaml:snakeyaml:1.33")
+    implementation("org.yaml:snakeyaml:2.7")
 }

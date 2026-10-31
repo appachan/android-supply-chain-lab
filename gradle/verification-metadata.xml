@@ -9,6 +9,7 @@
          <key-server uri="https://keys.openpgp.org"/>
       </key-servers>
       <trusted-artifacts>
+         <trust group="gradle" name="gradle"/>
          <trust file=".*-javadoc[.]jar" regex="true"/>
          <trust file=".*-sources[.]jar" regex="true"/>
       </trusted-artifacts>

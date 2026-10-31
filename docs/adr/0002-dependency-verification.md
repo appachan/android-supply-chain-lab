@@ -18,6 +18,7 @@ Gradle の依存検証（`gradle/verification-metadata.xml`）は、ビルドが
 - keyring は armored の `gradle/verification-keyring.keys` を commit する
 - `verify` は鍵サーバーを使わない（`<key-servers enabled="false">`）。再生成では到達できる 2 台から鍵を取得する
 - `*-sources.jar` と `*-javadoc.jar` は `trusted-artifacts` で検証の対象から外す
+- `gradle:gradle` も `trusted-artifacts` で検証の対象から外す。公式が安全と判断したものではなく、ユーザーと chief の判断である（「Android Studio の sync と gradle:gradle」）
 - Dependabot の Gradle の PR では、依存のコードを実行する読み取り専用のジョブと、書き込むジョブを分ける
   - `Regenerate verification metadata`（`pull_request`、`contents: read`）が metadata と `gradle.lockfile`（ADR-0003）を再生成して artifact にする
   - `Commit verification metadata`（`workflow_run`、`main` の定義）は PR のコードを実行せず、artifact をデータとして検査し、API でコミットする
@@ -354,7 +355,7 @@ off の効果は信頼の範囲ではなく、`verify` の決定性にある。�
 | 鍵の `version` を消して全ての版を信頼する | 不採用 | 記事自身が最も危険な判断としている。metadata の信頼 79 件のうち 23 件は版を限定している。Gradle が生成した範囲のまま残し、次の版で再度確認する |
 | 手で component を `trusted-key` に移す、ハッシュを消す | 不採用 | 手の編集はワークフローの再生成と競合し、差分が読みにくくなる |
 | metadata にコメントで注釈する | 不採用 | 再生成でコメントは消える（手元で確認）。判断の記録はコミット本文と ADR に残す |
-| `gradle-*-src.zip` を `trusted-artifacts` に入れる | 保留 | IntelliJ の sync の対策である。Android Studio で確認していないので、失敗してから足す |
+| `gradle-*-src.zip` を `trusted-artifacts` に入れる | 採用 | Android Studio の sync で失敗したので、`<trust group="gradle" name="gradle"/>` を足した（「Android Studio の sync と gradle:gradle」） |
 | `failOnNonReproducibleResolution()` か依存のロック | 対象外 | ADR-0003 の論点 8 で比較した。記事の BouncyCastle の版の範囲の例は、metadata が更新と無関係に壊れる原因になる |
 | `org.gradlex.jvm-dependency-conflict-resolution` | 不採用 | lab の依存は少なく、検証の対象の plugin が増える。rss-reader で依存の重複が問題になれば見直す |
 
@@ -374,6 +375,36 @@ catalog の `activity-compose` を 1.12.4、`androidx.test:runner` を 1.6.2、`
 設定なしの結果のとおり、この問題は cooldown を外しても解決しない。既定の 3 日が同じ経路を通る。ジョブの定義には `cooldown` がないが、ログには `cooldown days: 3` が出る。
 
 対処として `androidx.*` を `exclude` に入れた。ジョブの定義に `"exclude":["androidx.*"]` として渡り、Maven Central の依存の cooldown は残る。代償として、androidx のバージョンは公開直後でも提案される。`androidx.*` に当たらない Google Maven のライブラリには、同じ問題が残る。
+
+## Android Studio の sync と gradle:gradle
+
+Android Studio の sync が `gradle-9.7.1-src.zip`（`gradle:gradle:9.7.1`）の検証で失敗した。configuration は `:shared:domain:compileClasspath` で、署名の鍵 `51FBF517CE6D6B80` が keyring にない。CLI と CI はこの zip を取得しないので、`verify` では気づけない。
+
+`gradle:gradle` は Maven Central、Google Maven、Plugin Portal のどれにも存在しない。Android Studio が取得する Gradle のソースの zip の coordinates である。[Android Developers](https://developer.android.com/build/dependency-verification) の例の `from repository Gradle distributions` のとおり、配布元は Gradle の配布サイトである。実行される Gradle 本体は別の経路で、wrapper の `distributionSha256Sum` が検証する（ADR-0001）。
+
+対処として `gradle/verification-metadata.xml` の `trusted-artifacts` に `<trust group="gradle" name="gradle"/>` を足した。採用の理由はユーザーと chief の判断である。公式が安全と判断したものではない。
+
+- Android Developers は `The easiest way to correct this is to trust all source and javadocs.` として、最も簡単な直し方として示しているだけである
+- [Gradle のドキュメント](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html)は `Trusted means Gradle will not perform any verification whatsoever.` と警告している。`gradle:gradle` のすべてのバージョンで、検証は一切行われない
+- [gradle/gradle の v9.7.1 の verification-metadata.xml](https://github.com/gradle/gradle/blob/v9.7.1/gradle/verification-metadata.xml) にも同じ行がある。追加したのは [ff7304cbae](https://github.com/gradle/gradle/commit/ff7304cbae1545c6e2042c7bda3bbed0a5da5dca)（`Update wrapper and use latest verification format`）で、理由の記述はない
+
+| 検討した代案 | 判断 | 理由 |
+| --- | --- | --- |
+| `file` で zip に絞る | 不採用 | 検証の対象から外す範囲は狭くなるが、ユーザーと chief の判断で、Android Developers と gradle/gradle と同じ形にした |
+| 鍵を keyring に足す | 不採用 | Gradle は 2026 年に署名鍵を変えた。配布物の `.asc` の鍵は 9.7.0 まで `E2F38302C8075E3D`、9.7.1 から `51FBF517CE6D6B80` である。鍵が変わると、CI では気づけず sync だけが失敗する |
+| `-all` の配布物 | 不採用 | 258 MB に増える（`-bin` は 151 MB）。sync の失敗が解消するかは未検証である |
+
+確認の結果は次のとおりである。
+
+| 確認 | 結果 |
+| --- | --- |
+| 空の環境で再生成を 2 回 | `trust` の行は残り、metadata と keyring の差分は 0 行 |
+| レビュー用スクリプト（行のある metadata 同士） | 成功 |
+| レビュー用スクリプト（行のない metadata から行のある metadata） | `Setting trusted-artifacts changed` で拒否。再生成では起こらない変更なので正しい。この行は人の PR で足す |
+| 空の環境の検証の strict モードの `build` | 成功 |
+| init script で配布サイトの Ivy リポジトリを足し、`gradle:gradle:9.7.1@zip` を解決する | 行がないと `One artifact failed verification` で失敗し、行があると成功 |
+
+最後の確認は手元の再現で、Android Studio の sync そのものではない。`src.zip` が取得される条件は特定できていない。
 
 ## 実際の PR での確認
 
@@ -520,6 +551,7 @@ rss-reader は読むだけで、まだ適用していない。
 - `key-servers` の設定は lab と同じものを使う。`build-logic` と foojay の依存があるので、最初の生成で `ignored-key` がなくなるまで確認する
 - `setup-gradle` を使っている。ADR-0001 の理由で、再生成のジョブには入れない。キャッシュから入った依存も検証されることは手元で確認したが、`setup-gradle` との組み合わせは確認していない
 - 再生成のタスクを CI と揃える。`spotlessCheck`、`detekt`、`lint`、`test` は実行時に依存を解決するので、`build` に含まれない分があれば明示する
+- `trusted-artifacts` に `<trust group="gradle" name="gradle"/>` を入れる（「Android Studio の sync と gradle:gradle」）
 - `build-logic` は included build で、ルートの metadata を使う。lab に同じ構成を足して確認した（ADR-0003 の論点 7）。`settings.gradle.kts` の foojay の plugin も検証の対象になる
 - `build` で再生成した metadata で `assembleDebugAndroidTest` も空の環境の strict モードのビルドを通る。androidTest の分は lint のタスクが取得する。再生成から `lint` や `test` を外さない
 - 再生成のコマンドに `--write-locks` を入れ、`gradle.lockfile` もコミットの対象にする（ADR-0003）
@@ -546,6 +578,7 @@ rss-reader は読むだけで、まだ適用していない。
 
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない
+- `gradle-*-src.zip` が取得される条件は特定できていない
 - `[dependabot skip]` のあるコミットでの `@dependabot rebase` の結果は確認できていない。main を進めた後のコメントに Dependabot が反応しなかった
 - ruleset の下で再生成のコミットを実際に merge してはいない。`mergeStateStatus` の `CLEAN` までの確認である
 - `pull_request` の承認待ちの実行を REST API で承認できるかは確認していない。GitHub App の token に変えて承認を避けるかは判断していない

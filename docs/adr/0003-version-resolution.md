@@ -736,10 +736,10 @@ rss-reader のコピー（227fb9c）で、必要な制約の数を数えた。
 | `[versions]` にあるが、`[libraries]` と `[plugins]` から参照されず、build script だけが読む | ならない | パーサーは `[libraries]` と `[plugins]` しか見ない |
 | catalog の rich version（`version = { strictly = "..." }`） | ならない | [`dependencies_for_declarations`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_parser.rb#L335-L337) が飛ばす |
 | rich version を `[versions]` に置いて `version.ref` で参照する | ならない | 実物のパーサーの結果に出ない |
-| 記事の形（`implementation("g:a") { version { strictly("1.80") } }`） | ならない | 座標にバージョンがないので拾われない |
+| 記事の形（`implementation("g:a") { version { strictly("1.80") } }`） | ならない | coordinatesにバージョンがないので拾われない |
 | `"g:a:1.0!!"` の省略形 | ならない | 実物のパーサーの結果に出ない |
 | `"g:a:6.0"` に同じ行で `strictly("6.0")` を書く | なる | 1 行の形では `FileUpdater` が両方を 6.1 に書き換えた |
-| 同じ内容を複数行に書く（`"g:a:2.21.0") {`、`version {`、`strictly("2.21.0")`） | 座標だけなる | [PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) で座標だけ 2.22.0 になり、`strictly` は 2.21.0 のまま残った。解決されるバージョンは変わらない |
+| 同じ内容を複数行に書く（`"g:a:2.21.0") {`、`version {`、`strictly("2.21.0")`） | coordinatesだけなる | [PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) でcoordinatesだけ 2.22.0 になり、`strictly` は 2.21.0 のまま残った。解決されるバージョンは変わらない |
 
 `strictly` を使うなら、catalog の項目を `version.ref` で参照し、`strictly(libs.versions.x.get())` で読む形だけが Dependabot の更新を受ける。この形は [PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) の複数行の宣言でも catalog の変更で追随し、lock は `commons-codec` 1.23.0 になった。記事の例の形では更新されないので、修正のバージョンも人が上げる必要がある。
 
@@ -777,7 +777,7 @@ rss-reader のコピー（227fb9c）で、必要な制約の数を数えた。
 
 ## SNAPSHOT を使わない前提
 
-この ADR の方式は、SNAPSHOT を使わないことを運用の前提とする。使うプロジェクトでは見直しが必要である。lock は座標を固定するだけで中身を固定せず、[`verification-metadata.xml` の検証も SNAPSHOT を対象にしない](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sub:verification-metadata)。test と androidTest だけの依存では `failOnNonReproducibleResolution()` も届かない。
+この ADR の方式は、SNAPSHOT を使わないことを運用の前提とする。使うプロジェクトでは見直しが必要である。lock はcoordinatesを固定するだけで中身を固定せず、[`verification-metadata.xml` の検証も SNAPSHOT を対象にしない](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sub:verification-metadata)。test と androidTest だけの依存では `failOnNonReproducibleResolution()` も届かない。
 
 前提の理由は次のとおり。
 
@@ -814,7 +814,7 @@ Dependabot の PR では、次を確認する。
 
 - `gradle.lockfile` の差分。catalog の変更で説明できない module の変化がないか。特に Compose のように一式で揃う module が、一部の module でだけ変わっていないか
 - `gradle.lockfile` の差分の行数。BOM の更新では module ごとに 42 行、module の数だけ同じ差分が出る。`group` ごとの件数で確認し、説明できない `group` がないかを見る
-- 更新の内容が解決結果に現れているか。`strictly("...")` が残っていると、座標だけ変わって lock は変わらない
+- 更新の内容が解決結果に現れているか。`strictly("...")` が残っていると、coordinatesだけ変わって lock は変わらない
 
 推移的依存を上げるときは、catalog に項目を足して `constraints` で宣言する。範囲を指定した依存が入って失敗したときも同じである。`constraints` を外すときは catalog の項目も消す。
 
@@ -952,7 +952,7 @@ BOM の 2026.08.00 から 2026.09.00 への更新は、`:app`、`:feature:greeti
 
 `strictly(libs.versions.x.get())` は複数行でも追随した。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) で `[versions]` の `tmpCommonsCodec` が 1.23.0 になり、lock も 1.23.0 になった。Dependabot が見るのは catalog なので、build script の書き方は関係しない。
 
-バージョンを文字列で書いた `strictly("2.21.0")` は複数行だと更新されない。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) は座標だけ 2.22.0 に変え、lock の `commons-io` は 2.21.0 のままだった。PR のタイトルと本文は更新を示すのに、解決結果は変わらない。
+バージョンを文字列で書いた `strictly("2.21.0")` は複数行だと更新されない。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) はcoordinatesだけ 2.22.0 に変え、lock の `commons-io` は 2.21.0 のままだった。PR のタイトルと本文は更新を示すのに、解決結果は変わらない。
 
 ### build-logic の更新
 

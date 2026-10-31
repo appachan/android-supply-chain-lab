@@ -10,9 +10,10 @@ kotlin = "2.4.21"
 
 # Libraries
 androidxActivity = "1.13.0"
-androidxComposeBom = "2026.09.00"
+androidxComposeBom = "2026.08.00"
 androidxTestRunner = "1.7.0"
 junit4 = "4.13.2"
+tmpCommonsCodec = "1.22.0"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
@@ -24,6 +25,9 @@ androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+
+# Temporary: Dependabot experiment
+tmp-commons-codec = { module = "commons-codec:commons-codec", version.ref = "tmpCommonsCodec" }
 
 # Testing
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }

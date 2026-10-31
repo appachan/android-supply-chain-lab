@@ -283,7 +283,7 @@ Gradle 9.7.1 の dependency-management の jar に計測のログを足した配
 | 確認 | `sha256` だけ | 現在の `pgp,sha256` |
 | --- | --- | --- |
 | 必要な再生成 | 1 回。2 回目の差分は 0 行 | 2 回 |
-| main の依存の metadata | 4,017 行、574 component、950 ハッシュ | 672 行 |
+| main の依存の metadata | 4,017 行、574 component、950 ハッシュ | 630 行、82 component |
 | AGP 9.5.0 の更新の差分 | +466 行（59 component、116 ハッシュ）、削除 0 | +7 行 |
 | 別の空の環境の検証 | 成功（main の状態、AGP の更新の後） | 成功 |
 | lockfile | 差分なし | 差分なし |

@@ -48,7 +48,7 @@ keyring は armored にする。バイナリの `.gpg` は diff を読めず、�
 
 ### 2. 網羅性
 
-OS ごとの成果物: `aapt2` は署名で検証されるので、metadata に OS ごとのハッシュは 1 件もない。Linux の CI で再生成した PR #3 の metadata を使い、macOS の空の `GRADLE_USER_HOME` で strict にビルドして成功した。`aapt2-9.5.0-16666295-osx.jar` が取得され、metadata の `aapt2` への言及は 0 件である。
+OS ごとの成果物: `aapt2` は署名で検証されるので、metadata に OS ごとのハッシュは 1 件もない。Linux の CI で再生成した PR #3 の metadata を使い、macOS の空の `GRADLE_USER_HOME` で dependency verification の strict モードでビルドして成功した。`aapt2-9.5.0-16666295-osx.jar` が取得され、metadata の `aapt2` への言及は 0 件である。
 
 条件は、OS ごとの成果物が信頼する鍵で署名されていることである。無署名の OS 別成果物が増えると Linux の再生成では記録されず、macOS のビルドが失敗する。失敗する側に倒れるので、そのときは手元で再生成して足す。
 
@@ -58,7 +58,7 @@ plugin と buildscript: 検証の対象に含まれる。PR #1 の最初の失�
 
 再生成は同じコマンドで 2 回実行する。原因と根拠は「2 回の再生成が必要な原因」に書く。
 
-手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。strict ビルドに使った環境で再生成すると、不要な行が 19 行追加された。macOS と Linux で同じ 19 行だったので、OS の差ではない。
+手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。strict モードのビルドに使った環境で再生成すると、不要な行が 19 行追加された。macOS と Linux で同じ 19 行だったので、OS の差ではない。
 
 最初の生成は鍵サーバーの影響を受ける。1 回目は 17 件の鍵が取得できず `ignored-key` になった。同じ鍵を curl で取得すると成功するので一時的な失敗である。keyring に鍵が揃った状態で `ignored-keys`、`trusted-keys`、`components` を消して生成し直すと、ignored key は 0 件になり、2 回の生成の差分もなくなった。Linux の CI で同じ入力から再生成しても差分は出なかった（[run 41073618308](https://github.com/appachan/android-supply-chain-lab/actions/runs/41073618308)）。
 
@@ -168,7 +168,7 @@ ADR-0001 の配布物と違い、キャッシュ済みの依存も改ざんを�
 
 ## 2 回の再生成が必要な原因
 
-PR #1 では 1 回の再生成で `bc-jdk18on-bom-1.80.2.pom` の行が書かれず、再生成した commit の strict ビルドが失敗した（[run 41076964846](https://github.com/appachan/android-supply-chain-lab/actions/runs/41076964846)）。
+PR #1 では 1 回の再生成で `bc-jdk18on-bom-1.80.2.pom` の行が書かれず、再生成した commit の strict モードのビルドが失敗した（[run 41076964846](https://github.com/appachan/android-supply-chain-lab/actions/runs/41076964846)）。
 
 ### 確認できた事実
 
@@ -176,13 +176,13 @@ Gradle 9.7.1 の[ソース](https://github.com/gradle/gradle/tree/v9.7.1/platfor
 
 - 親 POM と import した BOM は `ExternalResourceResolverDescriptorParseContext` で解決され、子の `sources` に追加される。`DependencyVerifyingModuleComponentRepository` は `sources` の各 POM について、子を解決したリポジトリの名前で `onArtifact` を呼ぶ
 - `.asc` はそのラッパーのリポジトリから取得する。コンテンツフィルターの対象外の group でも取得を試みる（下記のログ）
-- strict の `ChecksumAndSignatureVerificationOverride` は `(artifact, repositoryId)` で重複を除くので、同じ POM をリポジトリごとに検証する
+- strict モードの `ChecksumAndSignatureVerificationOverride` は `(artifact, repositoryId)` で重複を除くので、同じ POM をリポジトリごとに検証する
 - writer の `WriteDependencyVerificationFile` は `LinkedHashSet` に `(id, kind, file)` で登録するので、リポジトリによらず最初の 1 件だけが残る
 
 lab の実物での観察:
 
 - Google Maven の `sdk-common-32.5.0.pom` が `bc-jdk18on-bom:1.80.2` を `dependencyManagement` で import している。この BOM は Maven Central にしかなく、`.pom.asc` と `.module` がある
-- 空の環境の strict のログ。Central から `.pom.asc` を取得したうえで、同じ POM の `.asc` を Google にも探して 404 になり、Google 経由の検証で失敗している
+- 空の環境の strict モードのビルドのログ。Central から `.pom.asc` を取得したうえで、同じ POM の `.asc` を Google にも探して 404 になり、Google 経由の検証で失敗している
 
 ```text
 Downloading https://repo.maven.apache.org/maven2/org/bouncycastle/bc-jdk18on-bom/1.80.2/bc-jdk18on-bom-1.80.2.pom.asc
@@ -192,11 +192,11 @@ One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc
 
 - `.asc` を探す先が 404 だったもののうち、Google のフィルターの対象外の group はこの 1 件だけだった
 - 再生成の 2 回目に書かれる行は `reason="Artifact is not signed"` だが、この POM は Central で署名されている。この記録は Google 経由の探索の結果であり、コミット本文の `[group has trusted keys: check for a dropped signature]` はこの場合は誤検知である
-- `--write-verification-metadata sha256` だけなら、空の環境の 1 回目で POM の行が書かれる。欠けるのは `pgp` を指定したときで、POM を見落としているのではない。ただし `verify-signatures` が `true` のままでは代わりにならない。この実行は 2246 行増え、未信頼の鍵で署名された groovy の 4 件で strict が失敗した
+- `--write-verification-metadata sha256` だけなら、空の環境の 1 回目で POM の行が書かれる。欠けるのは `pgp` を指定したときで、POM を見落としているのではない。ただし `verify-signatures` が `true` のままでは代わりにならない。この実行は 2246 行増え、未信頼の鍵で署名された groovy の 4 件で strict モードのビルドが失敗した
 
-実験の結果。AGP 9.5.0 への更新を、それぞれ空の `GRADLE_USER_HOME` で実行し、別の空の環境の strict で判定した。
+実験の結果。AGP 9.5.0 への更新を、それぞれ空の `GRADLE_USER_HOME` で実行し、別の空の環境の strict モードのビルドで判定した。
 
-| 手順 | 追加行 | strict |
+| 手順 | 追加行 | strict モードのビルド |
 | --- | --- | --- |
 | 再生成 1 回 | 6 | 失敗 |
 | `--refresh-dependencies` 付きで 1 回（2 回試行、結果は同一） | 6 | 失敗 |
@@ -204,7 +204,7 @@ One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc
 | 再生成 2 回、`--rerun-tasks` あり | 11 | 成功（上の行と同一のファイル） |
 | `help` で再生成、続けて `build` で再生成 | 11 | 成功 |
 
-Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict が成功した（[run 41160771357](https://github.com/appachan/android-supply-chain-lab/actions/runs/41160771357)）。更新のない `main` では、再生成しても `--refresh-dependencies` を付けても差分は 0 行だった。
+Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict モードのビルドが成功した（[run 41160771357](https://github.com/appachan/android-supply-chain-lab/actions/runs/41160771357)）。更新のない `main` では、再生成しても `--refresh-dependencies` を付けても差分は 0 行だった。
 
 条件を分けた最小の再現。Gradle 9.7.1、子の POM を別のリポジトリに置き、本物の署名付き BOM を参照する。keyring は固定した。
 
@@ -220,11 +220,11 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict が成
 - 1 回目の失敗の条件は、親や BOM の POM が子とは別のリポジトリにあり、そのリポジトリに署名があって、子のリポジトリに `.asc` がないことである。`.asc` を置くことだけで失敗が消えた
 - import か parent かは関係しない。`.module` の有無も 1 回目の失敗の条件ではない
 - POM のみの BOM では親の POM（`logging-parent-7.pom`、`apache-27.pom`）も同じように失敗した
-- `.module` がある BOM は、最小の再現では 3 回実行しても揃わなかった。POM のハッシュを手で足すと strict は成功した
+- `.module` がある BOM は、最小の再現では 3 回実行しても揃わなかった。POM のハッシュを手で足すと strict モードのビルドは成功した
 
 ### 推測
 
-- writer の登録は最初の 1 件が残るので、空の環境では親を解決した Central の経路が先に登録され、署名が有効なのでハッシュが不要と判断される。strict は Google の経路も別に検証するので、署名もハッシュもない状態で失敗する
+- writer の登録は最初の 1 件が残るので、空の環境では親を解決した Central の経路が先に登録され、署名が有効なのでハッシュが不要と判断される。strict モードは Google の経路も別に検証するので、署名もハッシュもない状態で失敗する
 - 2 回目はキャッシュがあるので親の経路が通らず、子の経路だけが登録され、署名が見つからないのでハッシュが書かれる
 - `.module` の有無と実物の結果の違いから、この説明は完全ではない。最小の再現の `.module` ありの BOM では 2 回目に揃わないが、lab の実物は同じ BOM で揃う。BC のライブラリへの依存と buildscript の `classpath` を足しても再現しなかった
 
@@ -232,7 +232,7 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict が成
 
 - [#19228](https://github.com/gradle/gradle/issues/19228)（open）と [#20194](https://github.com/gradle/gradle/issues/20194)（open）は、親や BOM の POM が metadata から欠ける問題である。Gradle の開発者は、解析済みの descriptor がキャッシュにあると親をたどらないことが原因だと[説明している](https://github.com/gradle/gradle/issues/20194#issuecomment-1652095447)。欠ける向きは warm cache で、`--refresh-dependencies` で解消した[報告](https://github.com/gradle/gradle/issues/19228)がある
 - lab の現象は別の原因である。空の環境で起き、`--refresh-dependencies` では直らず、`sha256` だけなら起きない。POM を見ていないのではなく、署名が有効と判断された結果ハッシュが書かれない。#20194 には空の `GRADLE_USER_HOME` でも起きるという[報告](https://github.com/gradle/gradle/issues/20194)があり、同じ現象の可能性があるが、再現手順がないので確認していない
-- [#24948](https://github.com/gradle/gradle/issues/24948)（open）は、親 POM の `<pgp>` と `trusted-key` が非決定的に変わる報告である。手元の strict の後に増えた 19 行は同じ形だが、関係は確認していない
+- [#24948](https://github.com/gradle/gradle/issues/24948)（open）は、親 POM の `<pgp>` と `trusted-key` が非決定的に変わる報告である。手元の strict モードのビルドの後に増えた 19 行は同じ形だが、関係は確認していない
 - 同じ原因の issue は見つけられなかった。[#33500](https://github.com/gradle/gradle/issues/33500) は PR ではなく open の issue で、#19228 の troubleshooting の追加を求めている。現在の[公式ドキュメント](https://docs.gradle.org/current/userguide/dependency_verification.html)にはキャッシュの状態と `--refresh-dependencies` の記述がない
 
 ### 一般的な運用例
@@ -308,8 +308,8 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict が成
 
 | 確認 | 結果 |
 | --- | --- |
-| 現在の keyring で空の環境の strict | 成功。[実装](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/verification/signatures/DefaultSignatureVerificationServiceFactory.java)は `EmptyPublicKeyService` を使い、外部に問い合わせない |
-| keyring に鍵がない依存の strict | 失敗。`Key servers are disabled, this can indicate that you need to update the local keyring` |
+| 現在の keyring で空の環境の strict モードのビルド | 成功。[実装](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/verification/signatures/DefaultSignatureVerificationServiceFactory.java)は `EmptyPublicKeyService` を使い、外部に問い合わせない |
+| keyring に鍵がない依存の strict モードのビルド | 失敗。`Key servers are disabled, this can indicate that you need to update the local keyring` |
 | 再生成 | `Will use key servers to download missing keys` を出して鍵を取得する。on と off の取得の成功率に差はなかった（3 回中 1 回と 2 回） |
 | 設定の保持 | `enabled="false"` と子要素の `key-server` は再生成で残る。検査のスクリプトの設定の比較も通る |
 | Dependabot の PR | [PR #4](https://github.com/appachan/android-supply-chain-lab/pull/4) で下記のとおり成功 |
@@ -349,7 +349,7 @@ off の効果は信頼の範囲ではなく、`verify` の決定性にある。�
 | 鍵の取得の失敗を手で keyring に足す | 手順として採用 | `ignored-key` になったときの選択肢 |
 | 署名のない成果物の値を手で確認する | 部分的に採用 | 確認の対象としてコミット本文に出す。`origin` の書き換えは運用しない |
 | metadata を変更するのは人の確認のため（ロボットの仕事ではない） | 採用 | コミットはワークフローが作るが、承認は人が行う。記事の「変更は稀であるべき」は Dependabot の更新のたびに差分が出るので、検査と分類で補う |
-| `verify-metadata` を `false` にする | 不採用 | 公式が `reduces security` としている。POM は依存の版を変えられるので、グループ単位で鍵を信頼すると、署名された古い版へ差し替えられても検知できない可能性がある（推測、未検証）。実測の削減は 314 行から 286 行で約 9% だけだった。この設定なら再生成は 1 回で strict が通り、2 回の再生成の問題は消えるが、検証を減らす理由にはしない |
+| `verify-metadata` を `false` にする | 不採用 | 公式が `reduces security` としている。POM は依存の版を変えられるので、グループ単位で鍵を信頼すると、署名された古い版へ差し替えられても検知できない可能性がある（推測、未検証）。実測の削減は 314 行から 286 行で約 9% だけだった。この設定なら再生成は 1 回で strict モードのビルドが通り、2 回の再生成の問題は消えるが、検証を減らす理由にはしない |
 | 鍵の `version` を消して全ての版を信頼する | 不採用 | 記事自身が最も危険な判断としている。metadata の信頼 79 件のうち 23 件は版を限定している。Gradle が生成した範囲のまま残し、次の版で再度確認する |
 | 手で component を `trusted-key` に移す、ハッシュを消す | 不採用 | 手の編集はワークフローの再生成と競合し、差分が読みにくくなる |
 | metadata にコメントで注釈する | 不採用 | 再生成でコメントは消える（手元で確認）。判断の記録はコミット本文と ADR に残す |
@@ -380,7 +380,7 @@ Dependabot が force-push したあとも、同じ流れが自動で再開した
 | 8 | 再生成とコミットが成功 | [run 41086473548](https://github.com/appachan/android-supply-chain-lab/actions/runs/41086473548)、[run 41087133359](https://github.com/appachan/android-supply-chain-lab/actions/runs/41087133359) |
 | 9 | dispatch した `verify` が成功 | [run 41087160219](https://github.com/appachan/android-supply-chain-lab/actions/runs/41087160219) |
 
-最終の head は [467adc9](https://github.com/appachan/android-supply-chain-lab/commit/467adc9d7594cf4f948f0f8ffedb9a17fdf6c764) で、`verification.verified` は `true`、PR は `MERGEABLE` である。Linux で再生成したこの metadata で、macOS の空の環境の strict ビルドと sources の取得も成功した（順序 4 の commit `625d53c` で確認。metadata の変更は同じ 11 行）。
+最終の head は [467adc9](https://github.com/appachan/android-supply-chain-lab/commit/467adc9d7594cf4f948f0f8ffedb9a17fdf6c764) で、`verification.verified` は `true`、PR は `MERGEABLE` である。Linux で再生成したこの metadata で、macOS の空の環境の strict モードのビルドと sources の取得も成功した（順序 4 の commit `625d53c` で確認。metadata の変更は同じ 11 行）。
 
 `gradlew.bat` にも 41 行の追加がある。Gradle 9.8.2 の wrapper のテンプレートの変更に見えるが、wrapper validation は `gradlew.bat` を検証しないので、ADR-0001 のとおり diff で確認する。
 
@@ -436,7 +436,7 @@ rss-reader は読むだけで、まだ適用していない。
 - `setup-gradle` を使っている。ADR-0001 の理由で、再生成のジョブには入れない。キャッシュから入った依存も検証されることは手元で確認したが、`setup-gradle` との組み合わせは確認していない
 - 再生成のタスクを CI と揃える。`spotlessCheck`、`detekt`、`lint`、`test` は実行時に依存を解決するので、`build` に含まれない分があれば明示する
 - `build-logic` は included build で、ルートの metadata を使う。lab に同じ構成を足して確認した（ADR-0003 の論点 7）。`settings.gradle.kts` の foojay の plugin も検証の対象になる
-- `build` で再生成した metadata で `assembleDebugAndroidTest` も空の環境の verify を通る。androidTest の分は lint のタスクが取得する。再生成から `lint` や `test` を外さない
+- `build` で再生成した metadata で `assembleDebugAndroidTest` も空の環境の strict モードのビルドを通る。androidTest の分は lint のタスクが取得する。再生成から `lint` や `test` を外さない
 - 再生成のコマンドに `--write-locks` を入れ、`gradle.lockfile` もコミットの対象にする（ADR-0003）
 - `distributionUrl` は 9.1.0、AGP は 9.0.1 で lab と異なるので、metadata は rss-reader で生成する。鍵の取得の失敗があれば、論点 2 の方法で ignored key をなくす
 - ruleset は `main` だけに適用され、署名付きコミット、`verify`、merge コミットを要求する。再生成コミットは `verified: true` なので署名の条件を満たす見込みである

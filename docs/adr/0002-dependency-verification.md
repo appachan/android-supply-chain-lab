@@ -60,7 +60,7 @@ plugin と buildscript: 検証の対象に含まれる。PR #1 の最初の失�
 
 再生成は同じコマンドで 2 回実行する。原因と根拠は「2 回の再生成が必要な原因」に書く。
 
-手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。strict モードのビルドに使った環境で再生成すると、不要な行が 19 行追加された。macOS と Linux で同じ 19 行だったので、OS の差ではない。
+手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。strict モードのビルドに使った環境で再生成すると、不要な行が 19 行追加された。macOS と Linux で同じ 19 行だったので、OS の差ではない。原因は「2 回の再生成が必要な原因」の仕組み 2 である。
 
 最初の生成は鍵サーバーの影響を受ける。1 回目は 17 件の鍵が取得できず `ignored-key` になった。同じ鍵を curl で取得すると成功するので一時的な失敗である。keyring に鍵が揃った状態で `ignored-keys`、`trusted-keys`、`components` を消して生成し直すと、ignored key は 0 件になり、2 回の生成の差分もなくなった。Linux の CI で同じ入力から再生成しても差分は出なかった（[run 41073618308](https://github.com/appachan/android-supply-chain-lab/actions/runs/41073618308)）。
 
@@ -224,11 +224,57 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict モー
 - POM のみの BOM では親の POM（`logging-parent-7.pom`、`apache-27.pom`）も同じように失敗した
 - `.module` がある BOM は、最小の再現では 3 回実行しても揃わなかった。POM のハッシュを手で足すと strict モードのビルドは成功した
 
-### 推測
+### 原因（確定）
 
-- writer の登録は最初の 1 件が残るので、空の環境では親を解決した Central の経路が先に登録され、署名が有効なのでハッシュが不要と判断される。strict モードは Google の経路も別に検証するので、署名もハッシュもない状態で失敗する
-- 2 回目はキャッシュがあるので親の経路が通らず、子の経路だけが登録され、署名が見つからないのでハッシュが書かれる
-- `.module` の有無と実物の結果の違いから、この説明は完全ではない。最小の再現の `.module` ありの BOM では 2 回目に揃わないが、lab の実物は同じ BOM で揃う。BC のライブラリへの依存と buildscript の `classpath` を足しても再現しなかった
+Gradle 9.7.1 の dependency-management の jar に計測のログを足した配布物で、再生成の実際の経路を記録した。計測の改変は scratchpad だけで、lab には入れていない。原因は別々の 2 つの仕組みである。
+
+仕組み 1: 再生成の 1 回目に行が書かれない（問い: AGP 9.5.0 の更新の `bc-jdk18on-bom`）。
+
+- [`DependencyVerifyingModuleComponentRepository`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/DependencyVerifyingModuleComponentRepository.java#L135-L150) は、先に `delegate.resolveComponentMetaData` を呼び、その後で `sources` の各 POM について `onArtifact` を呼ぶ。空の環境では `sdk-common` の解析が親と BOM の解決を含むので、BOM の自分の経路（Maven Central）が子の経路（Google）より必ず先に通る
+- [`WriteDependencyVerificationFile`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/writer/WriteDependencyVerificationFile.java#L474-L482) は `onArtifact` の repository の名前を使わず、`LinkedHashSet` に入れる。[`VerificationEntry`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/writer/VerificationEntry.java#L79-L85) の同一性は id、kind、file なので、後から来た Google の経路は捨てられる
+- `.asc` の取得は登録したエントリのクロージャが行うので、Maven Central の経路だけが確かめられ、署名が有効でハッシュは書かれない
+- strict モードは [`VerificationQuery(artifact, repositoryId)`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/ChecksumAndSignatureVerificationOverride.java#L123) で repository ごとに検証するので、Google の経路が署名もハッシュもない状態で失敗する
+
+記録は次のとおりである。
+
+| 実行 | `bc-jdk18on-bom-1.80.2.pom` の最初の登録 | 後の経路 | `.asc` | 結果 |
+| --- | --- | --- | --- | --- |
+| 1 回目 | Maven Central（自分の経路） | Google（`sdk-common`）は捨てられる | 成功 | 行なし |
+| 2 回目 | Google（`sdk-common`）。子がキャッシュから読まれ、BOM の自分の経路を通らない | なし | Google で 404 | `Artifact is not signed` のハッシュ |
+
+仕組み 2: 部分的なキャッシュで余分な行が書かれる（問い: 普段の `GRADLE_USER_HOME` の 44 行）。
+
+- 解析したばかりの子の `sources` の id は [`DefaultModuleComponentArtifactIdentifier`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/repositories/metadata/AbstractRepositoryMetadataSource.java#L95) である。ディスクのキャッシュから読み戻すと、[`DefaultMetadataFileSourceCodec`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/repositories/metadata/DefaultMetadataFileSourceCodec.java#L81-L82) が必ず `ModuleComponentFileArtifactIdentifier` を作る
+- 2 つのクラスの id は `equals` が成り立たないので、同じファイルに `PgpEntry` が 2 つできる
+- 並びは `PgpEntry`、`PgpEntry`、`ChecksumEntry`、`ChecksumEntry` になり、[`registerEntryToBuilder`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/writer/WriteDependencyVerificationFile.java#L337-L344) の id の照合が外れて `pgpEntry` が null になる。署名が有効でも `reason` のないハッシュが書かれる
+- 混在の条件は、同じ実行の中に「キャッシュから読む子」と「新しく解析する子」があることである。`build` は一部の configuration しか解決せず、再生成の writer は全 configuration を解決するので、`build` だけのキャッシュの後の再生成で混在する
+
+| 実行 | `Default` の id | `File` の id | 両方が混在したファイル |
+| --- | --- | --- | --- |
+| 空の環境の再生成の 1 回目 | 8,505 | 0 | 0 |
+| 同じ環境の 2 回目 | 0 | 8,268 | 0 |
+| 空の環境の `build` の後の再生成 | 1,690 | 6,655 | 7 |
+
+同じ手順で `reason` のない行を再現した。`build` を `--dependency-verification off` で実行しても strict モードで実行しても、どちらも 24 行増えた。
+
+判定は次のとおりである。
+
+| 説明 | 判定 | 根拠 |
+| --- | --- | --- |
+| 同じ POM の Maven Central と Google の経路で、最初の 1 件だけが記録される | 仕組み 1 については正しい | 上の記録と反事実 2 |
+| 同じ説明を 44 行にも当てはめる | 誤り | `guava-parent` の経路は Maven Central だけで Google を通らず、`.asc` も成功している。44 行に `reason` がなく、仕組み 1 の `Artifact is not signed` の形でもない |
+| ほかのビルドのキャッシュの混入 | 誤り | このプロジェクト自身の `build` のキャッシュで同じ形を再現した。44 行の component は lab の依存のグラフにある |
+
+因果の確認として writer を直した版を作った。lab には入れていない。
+
+| 修正 | 手順 | 結果 |
+| --- | --- | --- |
+| 反事実 1: `onArtifact` で METADATA の id のクラスをそろえる | `build` の後に再生成 | 余分な行が 24 行から 0 行になった |
+| 反事実 2: 登録しなかった経路の `.asc` も確かめ、ない経路があればハッシュを要求する | AGP 9.5.0 の更新を空の環境で 1 回再生成 | 未改変の Gradle の検証が成功した。metadata は通常の 2 回の結果と `reason` の文言だけが違う |
+
+最初に観測した 44 行そのものは再現していない。その後の実行で `~/.gradle` の状態が変わり、複製でも増えなかった。仕組みの確認は 24 行の再現と、44 行に `reason` がないことからの判断である。`org.apache:apache` と `org.sonatype.oss:oss-parent` の信頼する鍵の行が増える流れは追っていない。同じ混在の実行で増えることまでを確認した。
+
+`.module` の有無と実物の結果の違いの説明は残っている。最小の再現の `.module` ありの BOM では 2 回目に揃わないが、lab の実物は同じ BOM で揃う。
 
 ### 公式の issue との関係
 
@@ -244,6 +290,22 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict モー
 ### 採用する手順
 
 同じコマンドを空の環境で 2 回実行する。`--rerun-tasks` は結果が変わらないので使わない。`--refresh-dependencies` は空の環境では効果がないので使わない。
+
+2 回の実行はやめられない。Gradle の起動が 2 回必要である。仕組み 1 により、空の環境の 1 回の起動では、親の自分の経路が必ず先に登録される。子の経路だけを通すには、子がディスクのキャッシュにある状態の起動が別に要る。これは再生成の設定やタスクの順序では変わらず、writer の修正が必要である。
+
+AGP 9.5.0 の更新で、前段を変えて比べた。すべて未改変の Gradle で、判定は別の空の環境の検証である。
+
+| 手順 | metadata の追加行 | 別の空の環境の検証 | 余分な行 |
+| --- | --- | --- | --- |
+| 再生成を 2 回（採用） | 7 | 成功 | なし |
+| `help` で再生成、次に `build` で再生成 | 7 | 成功 | なし |
+| `--write-verification-metadata pgp,sha256 --dry-run build`、次に再生成 | 7 | 成功 | なし |
+| `--dependency-verification off build`、次に再生成 | 14 | 成功 | 7 行 |
+| `--dependency-verification off help`、次に再生成 | 33 | 成功 | 26 行 |
+
+前段が再生成なら writer が全 configuration を解決するので、2 回目はすべてキャッシュから読まれ、仕組み 2 が起きない。前段が通常のビルドだと部分的なキャッシュになり、余分な行が入る。`--dry-run` を前段にしても速くならない。機械が空いた状態で、再生成 2 回は 196 秒、`--dry-run` を前段にすると 245 秒だった。
+
+したがって `scripts/regenerate-dependency-metadata.sh` は変えない。
 
 2 回で揃う保証はない。最終的な判定は空の環境の `verify` であり、欠けていれば失敗する側に倒れる。`verify` が `.pom` で失敗し、`from repository` が親の配布元と違うときは、配布元の `.asc` で署名を確認してから、その POM の sha256 を metadata に手で足す。
 
@@ -278,11 +340,19 @@ okhttp 4.12.0 を `:app` の `implementation` に足して比べた。検証は�
 
 - metadata の必要な 1 行は `com.squareup` の group を鍵 `DBD744ACE7ADE6AA50DD591F66B50994442D2D40` で信頼する行である。再生成が group の単位にまとめるので、信頼の範囲が `com.squareup` 全体になることを人が確認する
 - lockfile は `okhttp`、`okio`、`okio-jvm` のほか、`kotlin-stdlib-common`、`kotlin-stdlib-jdk7`、`kotlin-stdlib-jdk8` の行が増える
-- 普段の環境の 44 行は不要である。空の環境の結果で検証が通るので、なくても成功する。`guava-parent`、`netty-parent`、`httpcomponents-parent`、`junit-bom` など、今回の依存と関係のない POM のハッシュで、ほかのビルドのキャッシュが混ざったと見られる。検証は通るので、CI では気づけない。これらは最初の利用の信頼（Trust on first use）の行なので、残すとレビューの量と信頼の範囲が増える
+- 普段の環境の 44 行は不要である。空の環境の結果で検証が通るので、なくても成功する。`guava-parent`、`netty-parent`、`httpcomponents-parent`、`junit-bom` など lab の依存のグラフにある POM のハッシュで、部分的なキャッシュの再生成で書かれる（「2 回の再生成が必要な原因」の仕組み 2）。検証は通るので、CI では気づけない。これらは最初の利用の信頼（Trust on first use）の行なので、残すとレビューの量と信頼の範囲が増える
 
 結論として、人の手順にも空の `GRADLE_USER_HOME` と 2 回の実行が必要である。空の環境は不要な行を入れないために必要である。2 回の実行は okhttp では不要だったが、AGP 9.5.0 の更新では必要で、人は事前に見分けられない。2 回目は変更がなければ短い（okhttp で 12 秒）ので、常に 2 回実行する。
 
 運用手順は `scripts/regenerate-dependency-metadata.sh` にまとめた。空の `GRADLE_USER_HOME` で 2 回実行し、失敗したら止まり、一時的な環境の Gradle デーモンを止めて消す。AGP 9.5.0 の更新で実行し、別の空の環境の検証の成功と、失敗のときに止まることを確認した。
+
+### 最小の再現
+
+公開の依存だけで、未改変の Gradle 9.7.1 で再現する。どちらも `gradle/verification-metadata.xml` に鍵サーバーの設定だけを書いた状態から始める。
+
+再現 1（仕組み 1）: `repo/sclab/child/1.0/child-1.0.pom` に `log4j-bom:2.24.3` を import する POM を置き、`settings.gradle.kts` に `maven { url = uri("repo"); content { includeGroup("sclab") } }` と `mavenCentral()` を書く。`implementation("sclab:child:1.0")` の `runtimeClasspath` を解決するタスクで、空の `GRADLE_USER_HOME` で再生成する。別の空の環境の検証は `3 artifacts failed verification` で失敗し、同じ環境でもう 1 回再生成すると成功する。ファイルのリポジトリの子は毎回解析されるので、この再現の 2 回目のハッシュは仕組み 2 の形で書かれる。
+
+再現 2（仕組み 2）: configuration `first` に `com.google.guava:failureaccess:1.0.1`、`second` に `com.google.guava:listenablefuture:1.0` を宣言する。どちらも親は `guava-parent:26.0-android` である。`first` だけを解決するタスクを `--dependency-verification off` で実行し、同じ環境で再生成すると、`guava-parent` に `reason` のないハッシュが書かれる。空の環境の再生成では行は 0 件である。どちらの metadata でも検証は成功する。
 
 ## 検証の対象
 

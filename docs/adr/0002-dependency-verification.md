@@ -101,7 +101,7 @@ Gradle の更新は `groups` で 1 つの PR にする。全ての PR が同じ 
 
 コンフリクトを作っただけでは Dependabot のジョブは起動しなかった。15 分待っても run がなく、`dependabot.yml` の変更で起動した。実際の運用では、次の定期実行か `@dependabot rebase` まで待つ可能性がある。PR #1 は同じジョブの後も `CONFLICTING` のままだったが、`[dependabot skip]` なしのコミットがあることに加えて、グループ化で個別の更新の対象外になっているので、原因は切り分けられていない。
 
-cooldown は 7 日に設定するが、Google Maven のプラグインには効かない。公開から 2 日の AGP 9.5.0 が提案された。ログは `Using POM Last-Modified fallback release dates for com.android.application from https://plugins.gradle.org/m2` と `Filtered out 0 version(s) due to cooldown` を出している。Plugin Portal は Maven Central へ 303 でリダイレクトし、Central は 404 を返すが、その応答に `Last-Modified: Sat, 11 Oct 2025` が付いている。[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/package/version_release_date_fallback_fetcher.rb)は status を確認せずにこの値を公開日として使う。ライブラリには効いていて、`androidx.activity:activity-compose` では 26 版が除外された。
+cooldown は 7 日に設定するが、Google Maven のプラグインには効かない。公開から 2 日の AGP 9.5.0 が提案された。ログは `Using POM Last-Modified fallback release dates for com.android.application from https://plugins.gradle.org/m2` と `Filtered out 0 version(s) due to cooldown` を出している。Plugin Portal は Maven Central へ 303 でリダイレクトし、Central は 404 を返すが、その応答に `Last-Modified: Sat, 11 Oct 2025` が付いている。[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/package/version_release_date_fallback_fetcher.rb)は status を確認せずにこの値を公開日として使う。ライブラリの結果は公開日に関係しない。`androidx.activity:activity-compose` では 26 版が除外されたが、ログの理由は `Release date not available for version 1.13.0 - filtering out` である。実際のログでは、Google Maven の公開日は `maven-metadata.xml` の最新の 1 バージョン分しか取れていない。最新が pre-release の `activity-compose`（1.14.0-alpha03）と `androidx.test:runner`（1.8.0-alpha03）は、安定版がすべて除外されて更新されない。BOM は最新が安定版なので更新された（ADR-0003 の [PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)）。cooldown を外すか、Google Maven の依存を手で更新する必要がある。
 
 比較した案:
 
@@ -129,7 +129,7 @@ Dependabot の PR で実測した token は次のとおり。`permissions: conte
 
 `Commit` の `if` で、`pull_request` からの実行、同じリポジトリ、`dependabot/gradle/` で始まるブランチを確認する。`workflow_run` は fork の PR でも書き込み token で動くので、`head_repository` の確認が境界になる。`Regenerate` の `if` は PR 側の定義なので、ここには頼らない。ブランチ名は env を経由して渡す。`github.actor` は判定に使わない。[Dependabot を使う confused deputy の攻撃](https://boostsecurity.io/blog/weaponizing-dependabot-pwn-request-at-its-finest)があるからである。
 
-artifact は信頼しない。`Regenerate` が侵害されていれば内容は任意になる。`Commit` は決まった 2 ファイルだけを読み、実行しない。検査のスクリプトは `main` の定義である。ただし、検査は構文上の検査で、正しさの証明ではない。新しい成果物に悪意のあるハッシュを書かれても区別できないので、人の確認が残る。
+artifact は信頼しない。`Regenerate` が侵害されていれば内容は任意になる。`Commit verification metadata` は決まった 2 ファイルと PR の tree にある `gradle.lockfile` だけを読み、実行しない。検査のスクリプトは `main` の定義である。ただし、検査は構文上の検査で、正しさの証明ではない。新しい成果物に悪意のあるハッシュを書かれても区別できないので、人の確認が残る。
 
 `GITHUB_TOKEN` の push では CI が通常どおり動かない。[公式](https://docs.github.com/en/actions/concepts/security/github_token)のとおり、`pull_request` の run は `action_required` で作られ、書き込み権限を持つ人が Approve workflows to run で開始する。実際に PR #1、PR #3 とも `action_required` になった。そこで `Commit` が `workflow_dispatch` で CI を実行する。この例外は同じページに書かれている。`verify` の check run は app 15368（GitHub Actions）で head の SHA に作られ、`pull_requests` に PR #3 が入った（[run 41082196141](https://github.com/appachan/android-supply-chain-lab/actions/runs/41082196141)）。
 
@@ -395,6 +395,10 @@ Dependabot が force-push したあとも、同じ流れが自動で再開した
 
 head は [5258a71](https://github.com/appachan/android-supply-chain-lab/commit/5258a71617e065b1706cc0c0e59f853af429b125) で、`verified: true`、PR は `MERGEABLE`、metadata の差分は 11 行である。
 
+### lockfile を含む PR
+
+ADR-0003 の方式を main に merge した後の PR で、再生成のコミットの `verified` は [PR #6](https://github.com/appachan/android-supply-chain-lab/pull/6)、[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7)、[PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)、[PR #9](https://github.com/appachan/android-supply-chain-lab/pull/9) のすべてで `true` だった。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) は 3 つの lockfile を含む。結果の一覧は ADR-0003 の論点 9 にある。
+
 ## 運用手順
 
 Dependabot の PR の確認:
@@ -452,11 +456,13 @@ rss-reader は読むだけで、まだ適用していない。
 - 新しい成果物の初回の信頼は、人の確認に依存する。配布元が侵害されていれば再生成も同じものを記録する
 - グループ単位の鍵の信頼は、鍵が盗まれると新しい成果物も通す
 - Google Maven のプラグインには cooldown が効かない
+- 最新が pre-release の Google Maven のライブラリは、cooldown があると Dependabot が更新しない
 - `verify` は鍵サーバーに依存しない。keyring の欠けは `verify` の失敗になる
 
 ## 未解決
 
-- `Exported 0 keys` の原因は確認していない。再生成のやり直しの手順（PR の Approve workflows to run、`@dependabot rebase`）も実際の PR では確認していない
+- `Exported 0 keys` の原因は確認していない。PR の Approve workflows to run による再生成のやり直しも実際の PR では確認していない
+- [PR #1](https://github.com/appachan/android-supply-chain-lab/pull/1) の `@dependabot rebase` は `edited by someone other than Dependabot` で断られた。`[dependabot skip]` のない再生成のコミットがあるためと見られる。`[dependabot skip]` のあるコミットでの `@dependabot rebase` は確認していない
 - dispatch した `verify` が ruleset の必須チェックを満たすかは確認していない。check run は head の SHA にあり、app も 15368 で、`pull_requests` に PR が入っている。一方で、`statusCheckRollup` は空、`gh pr checks` は `no checks reported`、`mergeStateStatus` は `UNSTABLE` のままだった。`action_required` の check suite が同じ commit にあることが関係している可能性があるが、原因は分かっていない。lab には ruleset がないので merge の可否は判定できない。確認には lab に一時的な ruleset を設定し、Approve workflows to run の前後で比較する必要がある。満たさなければ、Approve workflows to run を人の手順にして `workflow_dispatch` をやめるか、GitHub App の token に切り替える
 - 実際の ruleset の下での署名の確認はしていない。`verified: true` までの確認である
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める

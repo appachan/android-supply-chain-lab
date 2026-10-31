@@ -47,6 +47,4 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 ./gradlew build
 ```
 
-各 module の `gradle.lockfile` と異なる版が解決されるとビルドが失敗する。意図した変更なら `./gradlew --write-locks build` で全 module を更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
-
-依存を変えたときは、ADR-0002 の手順で `gradle/verification-metadata.xml` を更新する。
+各 module の `gradle.lockfile` と異なるバージョンが解決されるとビルドが失敗する。依存を変えたときは、ADR-0002 の手順で `gradle/verification-metadata.xml` と `gradle.lockfile` を一緒に更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。

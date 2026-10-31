@@ -37,13 +37,20 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      # lockfile は PR に既にあるものだけを受け取る。Dependabot の PR は module を増やさない
       - name: Compare with the pull request
         id: compare
         run: |
-          mkdir "$RUNNER_TEMP/current"
-          for file in verification-metadata.xml verification-keyring.keys; do
+          {
+            echo gradle/verification-metadata.xml
+            echo gradle/verification-keyring.keys
+            gh api "repos/$GITHUB_REPOSITORY/git/trees/$HEAD_SHA?recursive=1" \
+              --jq '.tree[].path | select(test("(^|/)gradle[.]lockfile$"))'
+          } > "$RUNNER_TEMP/files"
+          for file in $(cat "$RUNNER_TEMP/files"); do
+            mkdir -p "$RUNNER_TEMP/current/$(dirname "$file")"
             gh api -H 'Accept: application/vnd.github.raw+json' \
-              "repos/$GITHUB_REPOSITORY/contents/gradle/$file?ref=$HEAD_SHA" > "$RUNNER_TEMP/current/$file"
+              "repos/$GITHUB_REPOSITORY/contents/$file?ref=$HEAD_SHA" > "$RUNNER_TEMP/current/$file"
           done
           if diff -rq "$RUNNER_TEMP/current" "$RUNNER_TEMP/regenerated"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -56,9 +63,9 @@ jobs:
         shell: bash
         run: |
           python3 .github/scripts/review_verification_metadata.py \
-            "$RUNNER_TEMP/current/verification-metadata.xml" \
-            "$RUNNER_TEMP/regenerated/verification-metadata.xml" \
-            "$RUNNER_TEMP/regenerated/verification-keyring.keys" \
+            "$RUNNER_TEMP/current/gradle/verification-metadata.xml" \
+            "$RUNNER_TEMP/regenerated/gradle/verification-metadata.xml" \
+            "$RUNNER_TEMP/regenerated/gradle/verification-keyring.keys" \
             | tee "$RUNNER_TEMP/review.md" >> "$GITHUB_STEP_SUMMARY"
 
       # API 経由のコミットは GitHub が署名する。expectedHeadOid で再生成後に更新されたブランチへの書き込みを防ぐ
@@ -66,20 +73,20 @@ jobs:
       - name: Commit through the API
         if: steps.compare.outputs.changed == 'true'
         run: |
+          for file in $(cat "$RUNNER_TEMP/files"); do
+            jq -n --arg path "$file" --rawfile contents <(base64 -w0 "$RUNNER_TEMP/regenerated/$file") \
+              '{path: $path, contents: $contents}'
+          done > "$RUNNER_TEMP/additions.json"
           jq -n \
             --arg query 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }' \
             --arg repo "$GITHUB_REPOSITORY" \
             --rawfile body "$RUNNER_TEMP/review.md" \
-            --rawfile metadata <(base64 -w0 "$RUNNER_TEMP/regenerated/verification-metadata.xml") \
-            --rawfile keyring <(base64 -w0 "$RUNNER_TEMP/regenerated/verification-keyring.keys") \
+            --slurpfile additions "$RUNNER_TEMP/additions.json" \
             '{query: $query, variables: {input: {
               branch: {repositoryNameWithOwner: $repo, branchName: env.HEAD_BRANCH},
               expectedHeadOid: env.HEAD_SHA,
-              message: {headline: ":lock: Regenerate dependency verification metadata", body: ($body + "\n[dependabot skip]")},
-              fileChanges: {additions: [
-                {path: "gradle/verification-metadata.xml", contents: $metadata},
-                {path: "gradle/verification-keyring.keys", contents: $keyring}
-              ]}
+              message: {headline: ":lock: Regenerate dependency verification metadata and locks", body: ($body + "\n[dependabot skip]")},
+              fileChanges: {additions: $additions}
             }}}' | gh api graphql --input -
 
       # GITHUB_TOKEN のコミットでは CI が自動で実行されないので、workflow_dispatch で実行する

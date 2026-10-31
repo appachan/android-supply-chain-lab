@@ -11,7 +11,7 @@ Android アプリのサプライチェーンリスクに対する理想の運用
 3. version catalog の指定と推移的依存のバージョンのズレの検知と固定
 4. private ライブラリを GitHub Packages の Maven で配信するときの完全性の検証と provenance
 
-テーマ 1 の判断と検証結果は [ADR-0001](docs/adr/0001-gradle-wrapper-verification.md)、テーマ 3 は [ADR-0003](docs/adr/0003-version-resolution.md) にまとめている。
+テーマ 1 の判断と検証結果は [ADR-0001](docs/adr/0001-gradle-wrapper-verification.md)、テーマ 2 は [ADR-0002](docs/adr/0002-dependency-verification.md)、テーマ 3 は [ADR-0003](docs/adr/0003-version-resolution.md) にまとめている。
 
 ## 構成
 
@@ -38,3 +38,5 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 ```
 
 `app/gradle.lockfile` と異なる版が解決されるとビルドが失敗する。意図した変更なら `./gradlew :app:dependencies --write-locks` で更新する。詳細は [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
+
+依存を変えたときは、ADR-0002 の手順で `gradle/verification-metadata.xml` を更新する。

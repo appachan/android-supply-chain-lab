@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Google Maven のプラグインには効かない。docs/adr/0002-dependency-verification.md を参照
+    cooldown:
+      default-days: 7
+    # 全更新が verification-metadata.xml を変更するので、PR を分けると互いにコンフリクトする
+    groups:
+      gradle:
+        patterns:
+          - '*'
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7

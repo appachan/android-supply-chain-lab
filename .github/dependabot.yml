@@ -15,6 +15,12 @@ updates:
       gradle:
         patterns:
           - '*'
+    # temporary: cooldown experiment
+    ignore:
+      - dependency-name: gradle-wrapper
+      - dependency-name: com.android.application
+      - dependency-name: com.android.library
+      - dependency-name: com.android.tools.build:gradle
 
   - package-ecosystem: github-actions
     directory: /

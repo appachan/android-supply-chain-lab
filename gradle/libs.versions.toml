@@ -13,7 +13,7 @@ androidxActivity = "1.12.4"
 androidxComposeBom = "2026.09.00"
 androidxTestRunner = "1.6.2"
 junit4 = "4.13.2"
-tmpAwsAnnotations = "2.56.0"
+tmpAwsAnnotations = "2.57.5"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }

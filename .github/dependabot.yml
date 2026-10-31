@@ -13,12 +13,9 @@ updates:
       gradle:
         patterns:
           - '*'
-    # temporary: library only experiment
+    # temporary: plugin and library experiment
     ignore:
       - dependency-name: gradle-wrapper
-      - dependency-name: com.android.application
-      - dependency-name: com.android.library
-      - dependency-name: com.android.tools.build:gradle
 
   - package-ecosystem: github-actions
     directory: /

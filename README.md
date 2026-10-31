@@ -63,6 +63,65 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 5. 差分で、増えた鍵と group の範囲を確かめる。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
 6. PR を出す
 
+## 検証が POM で失敗したとき
+
+親や BOM の POM の行は、再生成 1 回では書かれないことがある。子と親が別の repository にあり、子の repository に `.asc` がないときである。例えば AGP 9.5.0 の `sdk-common`（Google Maven）は、Maven Central の `bc-jdk18on-bom` を参照する。このとき `verify` は対象のファイルと repository を示して失敗する。
+
+```text
+One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc-jdk18on-bom:1.80.2) from repository Google
+```
+
+次の手順で行を足す。例は `bc-jdk18on-bom` である。
+
+1. 配布元の POM と `.asc` を取得し、`from repository` の repository に `.asc` がないことを確かめる
+
+   ```sh
+   base=https://repo.maven.apache.org/maven2/org/bouncycastle/bc-jdk18on-bom/1.80.2/bc-jdk18on-bom-1.80.2.pom
+   curl -fO "$base"
+   curl -fO "$base.asc"
+   curl -s -o /dev/null -w '%{http_code}\n' https://dl.google.com/dl/android/maven2/org/bouncycastle/bc-jdk18on-bom/1.80.2/bc-jdk18on-bom-1.80.2.pom.asc
+   ```
+
+2. 署名を確かめる。`gradle/verification-keyring.keys` は鍵の自己署名を省いていて `gpg` に取り込めない鍵があるので、鍵サーバーの鍵を使う。表示された fingerprint が `gradle/verification-metadata.xml` の `trusted-key` にあり、その group が対象と合うことを確かめる
+
+   ```sh
+   export GNUPGHOME="$(mktemp -d)"
+   gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 7B121B76A7ED6CE6E60AD51784E913A8E3A748C0
+   gpg --verify bc-jdk18on-bom-1.80.2.pom.asc bc-jdk18on-bom-1.80.2.pom
+   ```
+
+3. sha256 を計算し、`gradle/verification-metadata.xml` の `components` に行を足す。`reason` に確かめた結果を書く
+
+   ```xml
+   <component group="org.bouncycastle" name="bc-jdk18on-bom" version="1.80.2">
+      <artifact name="bc-jdk18on-bom-1.80.2.pom">
+         <sha256 value="5f59cc51b21d92ddc08cc93b488983ea43dd211fe8d950335ef31bcdd7b15b47" origin="Added by hand" reason="Signature verified with key 7B121B76A7ED6CE6E60AD51784E913A8E3A748C0 from the Maven Central .asc. Google Maven has no .asc for this POM, so the route through the child in Google needs this checksum. See docs/adr/0002-dependency-verification.md"/>
+      </artifact>
+   </component>
+   ```
+
+4. 別の空の `GRADLE_USER_HOME` で検証する
+
+   ```sh
+   GRADLE_USER_HOME="$(mktemp -d)" ./gradlew build
+   ```
+
+手で足した行は再生成で残る。署名を確かめられないときは行を足さず、更新を見送る。
+
+### 誰が、どのブランチに足すか
+
+自分で依存を足す PR では、PR の作成者が同じブランチに行を足す。
+
+Dependabot の PR では、PR を確認する人が次の順番で作業する。Dependabot のブランチには直接コミットしない。`[dependabot skip]` のないコミットがあると、Dependabot が rebase を断るためである。
+
+1. main から別のブランチを作り、上の手順で確かめた行だけを足す。再生成は実行しない。この行はまだ使われないが、`verify` は成功する
+2. PR を作り、`verify` の成功の後に merge する
+3. Dependabot の PR に `@dependabot rebase` をコメントする
+4. `Regenerate verification metadata` と `Commit verification metadata` の結果を確かめ、再生成のコミットがあれば Approve workflows to run を押す
+5. PR の `verify` の成功を確かめて merge する
+
+この順番は実際の Dependabot の PR では試していない。手元で確かめたのは、使われない行があっても `verify` が成功すること、行が再生成で残ること、行を足すと `verify` が成功することである。手順 3 の `@dependabot rebase` が動くかは未確認で、反応がないときの代わりの手順も決まっていない。
+
 ## Gradle を更新する
 
 Gradle の更新の PR は、merge の前に Android Studio で sync する。Gradle の更新で鍵や取得するソースが変わると、CI は成功して sync だけが失敗することがある。

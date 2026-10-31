@@ -435,9 +435,42 @@ PR #13 の head の 2ce8f59 は再生成のコミットで、その後に手動�
 | 署名 | 73718f0、2ce8f59 とも `verified: true`、`reason: valid` |
 | `reviewDecision` | null（レビューの要求なし） |
 
-`BLOCKED` の理由の文面は取得できなかった。公開の GraphQL に `mergeRequirements` はなく、rule suite は merge の試行がないので記録がない。
+リポジトリの管理者が Approve workflows to run を押すと、`pull_request` の `CI`（[run 41190379016](https://github.com/appachan/android-supply-chain-lab/actions/runs/41190379016)）と `Regenerate verification metadata`（[run 41190379158](https://github.com/appachan/android-supply-chain-lab/actions/runs/41190379158)）が attempt 2 として実行されて成功した。
 
-消去法では必須チェックが残る。署名は有効で、`required_approving_review_count` は 0 である。`require_extra_approval_for_unattributed_changes` は [REST API の説明](https://github.com/github/rest-api-description)によれば `When Copilot opens a pull request without a human collaborator, require one more approving review if a non-zero approval count is required.` なので、Dependabot の PR で承認数 0 の lab には当たらないと読める。手動で起動した `verify` は必須として認識されるが、merge の判定には数えられていない可能性がある。これは推測で、実際に merge を試すか、Approve workflows to run で `pull_request` の `verify` を実行すれば確かめられる。どちらも行っていない。
+| 確認 | Approve の前 | Approve の後 |
+| --- | --- | --- |
+| `mergeStateStatus` | `BLOCKED` | `CLEAN` |
+| `statusCheckRollup` | 空 | `SUCCESS`（`verify` は `isRequired: true`） |
+| `verify` の実行の event | `workflow_dispatch` | `pull_request` |
+
+手動で起動した `verify` では必須チェックを満たせないと確定した。check run は `isRequired: true` と表示されるが、PR の判定には数えられない。必要なのは `pull_request` の実行である。
+
+変わったのはチェックだけなので、`required_signatures`、`require_extra_approval_for_unattributed_changes`、承認数 0 の `pull_request` の規則は、再生成のコミットがあっても判定を止めない。PR #13 は merge していないので、実際の merge の成否は `CLEAN` の判定までの確認である。
+
+Approve で再実行された `Regenerate verification metadata` は差分を作らず、head は 2ce8f59 のままだった。再生成のやり直しで再度の Approve が必要になる状況は起きていない。
+
+### Approve workflows to run が必要になる条件
+
+条件は、`GITHUB_TOKEN` による push が作る `pull_request` の実行である。[GITHUB_TOKEN の説明](https://docs.github.com/en/actions/concepts/security/github_token)に、`events triggered by the GITHUB_TOKEN will not create a new workflow run` の例外として、`the resulting pull_request event creates workflow runs in an approval-required state` とある。同じページに、`workflow_dispatch` は常に実行を作ること、GitHub App の installation access token か personal access token を使えばこの承認を避けられることが書かれている。
+
+直近 100 件の実行の記録は次のとおりである。
+
+| 場合 | event | actor | 結果 |
+| --- | --- | --- | --- |
+| Dependabot のコミット | `pull_request` | `dependabot[bot]` | 20 件すべて承認なしで実行された |
+| 再生成のコミット | `pull_request` | `github-actions[bot]` | 14 件すべて承認待ちになった（attempt 1）。PR が閉じた後に `failure` へ変わるものがある |
+| `Run CI on the new commit` | `workflow_dispatch` | `github-actions[bot]` | 承認なしで実行されるが、必須チェックを満たさない |
+
+fork の設定は関係しない。PR の head は同じリポジトリで、`actions/permissions/fork-pr-contributor-approval` の `first_time_contributors` は [fork の PR](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks) の承認の設定である。environment もない。
+
+- 再生成のコミットがある PR: 毎回 Approve が必要である。再生成のコミットが増えるたびに必要になる
+- 再生成のコミットがない PR: 不要である。[PR #11](https://github.com/appachan/android-supply-chain-lab/pull/11) と [PR #12](https://github.com/appachan/android-supply-chain-lab/pull/12) は Dependabot のコミットだけで、`pull_request` の `verify` が承認なしで動いた。metadata に更新先の成果物が既にあるか、成果物が group の鍵で検証できる場合である
+
+rss-reader の設定を読み取りで確認した。public で、`fork-pr-contributor-approval`、`default_workflow_permissions`、`can_approve_pull_request_reviews` は lab と同じで、environment もない。同じ方式を適用すれば同じ Approve が必要になる。
+
+### 手動の verify の扱い
+
+`Commit verification metadata` の `Run CI on the new commit` は残す。必須チェックは満たさないが、Approve の前に検証の結果を確かめられる。
 
 ### lockfile を含む PR
 
@@ -454,7 +487,8 @@ Dependabot の PR の確認:
 5. wrapper の更新があれば、`gradlew` と `gradlew.bat` の diff を確認する
 6. `Rejected` で `Commit` が失敗したときは merge しない。原因を調べるまで再生成しない
 7. `verify` が `.pom` で失敗したら、「2 回の再生成が必要な原因」の手順で確認する
-8. `verify` の成功を確認して merge する。必須チェックとして認識されないときは Approve workflows to run で PR の `verify` を実行する
+8. 再生成のコミットがある PR では、Approve workflows to run を押して `pull_request` の `verify` を実行する。手動で起動した `verify` は必須チェックを満たさない
+9. `verify` の成功と `mergeStateStatus` の `CLEAN` を確認して merge する
 
 `Regenerate` が失敗したときは、更新そのものがビルドできないので人が判断する。
 
@@ -480,6 +514,7 @@ GRADLE_USER_HOME="$(mktemp -d)" sh -c '
 rss-reader は読むだけで、まだ適用していない。
 
 - `dependabot.yml` がないので追加する。`cooldown` の `exclude` に `androidx.*` を入れる
+- 再生成のコミットがある Dependabot の PR は、ruleset の必須チェックのために Approve workflows to run が毎回必要になる（「Approve workflows to run が必要になる条件」）
 - `ci.yml` に `workflow_dispatch` を追加する。`verify` のジョブ名はそのままでよい
 - `concurrency` は `github.ref` で分かれている。dispatch と PR の run は ref が違うので互いに取り消さない想定だが、確認していない
 - `key-servers` の設定は lab と同じものを使う。`build-logic` と foojay の依存があるので、最初の生成で `ignored-key` がなくなるまで確認する
@@ -499,6 +534,7 @@ rss-reader は読むだけで、まだ適用していない。
 - 依存の更新で、人が見る差分が新しい鍵と無署名の成果物に絞られる
 - Dependabot の PR ごとに `Regenerate` が再生成を 2 回実行する。2 回目はタスクが最新なので短い
 - CI の `verify` の成功は metadata の一貫性だけを示す。承認の根拠にしない
+- 再生成のコミットがある PR は、人が Approve workflows to run を押すまで merge できない
 - 新しい成果物の初回の信頼は、人の確認に依存する。配布元が侵害されていれば再生成も同じものを記録する
 - グループ単位の鍵の信頼は、鍵が盗まれると新しい成果物も通す
 - Google Maven のプラグインには cooldown が効かない
@@ -509,9 +545,9 @@ rss-reader は読むだけで、まだ適用していない。
 ## 未解決
 
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
-- `Exported 0 keys` の原因は確認していない。PR の Approve workflows to run による再生成のやり直しも実際の PR では確認していない
+- `Exported 0 keys` の原因は確認していない
 - `[dependabot skip]` のあるコミットでの `@dependabot rebase` の結果は確認できていない。main を進めた後のコメントに Dependabot が反応しなかった
-- 手動で起動した `verify` が ruleset の必須チェックを満たすかは確定していない。PR #13 は `BLOCKED` で、理由の文面は取得できなかった（「ruleset の下での判定」）。`action_required` の check suite が同じ commit にあることが関係している可能性がある
-- ruleset の下で再生成のコミットが merge できるかは確認していない。`required_signatures` については 2 つのコミットとも `verified: true` までの確認である
+- ruleset の下で再生成のコミットを実際に merge してはいない。`mergeStateStatus` の `CLEAN` までの確認である
+- `pull_request` の承認待ちの実行を REST API で承認できるかは確認していない。GitHub App の token に変えて承認を避けるかは判断していない
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める
 - `.module` のある BOM が lab の実物では 2 回で揃い、最小の再現では揃わない理由は確認していない

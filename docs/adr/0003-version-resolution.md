@@ -21,15 +21,15 @@ Accepted
 
 ## Decision
 
-検知を基本にし、固定は例外にする。
+検査の目的は、意図しない版が使われないことと、ビルドした時期で版が変わらないことである。自然なアプローチを優先し、それで解決できないときだけ追加の仕組みを許容する。
 
-1. `checkResolvedVersions` を `check` に組み込み、catalog の宣言と解決結果のズレで CI を失敗させる（[gradle/resolved-versions.gradle.kts](../../gradle/resolved-versions.gradle.kts)）
-2. `failOnNonReproducibleResolution()` を全 project の configuration と root の plugin の classpath に設定し、動的な版と changing な版を禁止する。推移的依存にも効くが、subproject、settings、included build の classpath には届かないので、それらを使うときは[個別に設定する](#failonnonreproducibleresolution-と推移的依存)
-3. dependency locking は採用しない
-4. `strictly`、`enforcedPlatform` は常用しない。推移的依存を上げる必要があるときは、catalog の項目と `constraints` を使う
-5. ズレを検知したら、原因を確認して catalog を解決結果に合わせて上げる。上げても解決結果は変わらない。合わせられない理由があるときだけ固定を検討する
+1. 時期による変化は `failOnNonReproducibleResolution()` で防ぐ
+2. 決定的だが意図しない版は `gradle.lockfile` で止めて、PR の差分で確認する。対象は subproject の `*CompileClasspath` と `*RuntimeClasspath` である。lock と `failOn` は同じ configuration で併用できないので、それ以外の configuration と root の plugin の classpath に `failOnNonReproducibleResolution()` を設定する
+3. 特定の module を上げたくないときは、`constraints` の `reject` を使う。`strictly`、`enforcedPlatform` は常用しない。推移的依存を上げるときは catalog の項目と `constraints` を使う
+4. 自作の `checkResolvedVersions` は廃止する。dependency-guard は採用しない
+5. `buildscript-gradle.lockfile` は使わない。plugin の classpath の推移的依存の変化は PR で見えないが、許容する
 
-locking を採用しない主な理由は 3 つある。Dependabot が `buildscript-gradle.lockfile` を更新しないので AGP や Kotlin の更新 PR の CI が必ず失敗すること、catalog より高い lock は黙って catalog を上書きすること、`failOnDynamicVersions` と併用できないことである。推移的依存の変化を PR で見る役割は、テーマ 2 で main に入った `verification-metadata.xml` が担う（[論点 5](#論点-5-verification-metadataxml-との相互作用)）。この前提が崩れたら locking を再検討する。
+最初の決定は、自作の検査を基本にし、locking を採用しないというものだった。その前提は誤りだったので見直した。経緯と比較は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。以下の論点 1 から 5 の実験は記録として残す。
 
 ## 論点 1: 再現
 
@@ -122,7 +122,7 @@ E7 の固定は Gradle が行う。[`EmbeddedKotlinProvider`](https://github.com
 | dependency locking | 変化を検知。lock 作成時に既にあるズレは記録されるだけ | catalog を lock より下げても黙って lock の版になる | なし | `lockAllConfigurations()` で全体に適用。lint、UTP、Kotlin compiler の configuration も lock され、lab で 303 行、rss-reader で計 4,739 行 | 別に宣言が必要。`buildscript-gradle.lockfile` が増える |
 | BOM / `platform` | 効果なし。BOM を超えて上がる（M6） | 効果なし | なし | 宣言した configuration の範囲 | 効果なし |
 | `enforcedPlatform` | 固定。ただしビルドが壊れた（M6） | 引き起こす側 | なし | 宣言した configuration の範囲 | 未確認 |
-| 自前の検査 | 検知 | 検知 | なし。rss-reader の 1 件は実際のズレ | `*CompileClasspath`、`*RuntimeClasspath` を列挙 | marker の実装を比較 |
+| 自前の検査（廃止） | 検知 | 検知 | なし。rss-reader の 1 件は実際のズレ | `*CompileClasspath`、`*RuntimeClasspath` を列挙 | marker の実装を比較 |
 
 ビルド時間は、ウォームなデーモンで `./gradlew build --no-configuration-cache --no-build-cache --rerun-tasks` を 3 構成で交互に 6 回ずつ実行した。
 
@@ -161,7 +161,7 @@ M5（dependency locking）:
 - catalog を上げると lock の `strictly` と衝突して解決が失敗する（`Dependency version enforced by Dependency Locking`）。AGP の更新も同様で、どちらも PR の CI で検知できる
 - catalog を下げると失敗しない。`activity` を lock の 1.12.4 より低い 1.12.0 にすると `1.12.0 -> 1.12.4` になり、ビルドは成功する。[ドキュメントどおりの動作](https://docs.gradle.org/9.7.1/userguide/dependency_locking.html)だが、catalog の値がそのまま嘘になる
 - `activity` を 1.12.4 から 1.13.0 に上げたときの lock の diff には `navigationevent` の 1.0.2 から 1.0.0 への変化が現れた。推移的依存の変化が見えるのは locking の利点である
-- `failOnDynamicVersions` と同時に使うと `Both dependency locking and fail on dynamic versions are enabled. You must choose between the two modes.` で失敗する
+- `failOnDynamicVersions` と同時に使うと `Both dependency locking and fail on dynamic versions are enabled. You must choose between the two modes.` で失敗する。`failOnChangingVersions` も同様に `Both dependency locking and fail on changing versions are enabled.` で失敗する（[論点 6](#論点-6-既存の手段との比較と見直し)）
 
 M6（BOM / `platform`）: Compose BOM を 2025.06.00 にする。`platform` では BOM の `ui` 1.8.2 を超えて 1.9.2 に解決された。BOM は `activity-compose` 1.13.0 の要求を止めない。`enforcedPlatform` では 1.8.2 に固定されるが、`runtime-annotation` が 1.9.0 のまま残り `assembleDebug` が重複クラスで失敗した。
 
@@ -230,18 +230,18 @@ M7: 結論として、推移的依存にも効く。POM と Gradle Module Metada
 
 | 経路 | 採用した設定のまま | 版（初回、キャッシュあり、キャッシュなし） | 対策 | 対策後 |
 | --- | --- | --- | --- | --- |
-| subproject の `plugins` に版付きで書いた plugin | 通過 | 1.9、1.9、1.9.5 | `gradle/resolved-versions.gradle.kts` に `if (!isRoot) project.buildscript.configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }` | 失敗 |
+| subproject の `plugins` に版付きで書いた plugin | 通過 | 1.9、1.9、1.9.5 | subproject ごとに `project.buildscript.configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }` | 失敗 |
 | `settings.gradle.kts` の `plugins` | 通過 | 1.9、1.9、1.9.5 | `settings.gradle.kts` に `buildscript { configurations.all { resolutionStrategy.failOnNonReproducibleResolution() } }` | 失敗 |
 | included build（`build-logic`）の依存 | 通過 | 1.9、1.9、1.9.5 | included build の project に `configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }` | 失敗 |
 
-`apply(from = ...)` のスクリプトの中の `buildscript` はスクリプト自身の handler を指すので、subproject の対策には `project.buildscript` が必要である。`buildscript` のままでは通過した。
+この対策は当時の `apply(from = ...)` のスクリプトで確認した。スクリプトの中の `buildscript` はスクリプト自身の handler を指すので、`project.buildscript` が必要である。`buildscript` のままでは通過した。
 
 対策と運用への影響:
 
 - lab には 3 経路のどれもないので、コードは変更しない。使い始めるときに上の設定を足す
 - rss-reader には settings の plugin と `build-logic` があるので、[適用の差分](#rss-reader-に適用するときの差分)に含める
 - ライブラリが動的な版の依存を公開すると、その更新の PR の CI が失敗する。範囲なら、catalog の項目と `constraints` で範囲内の版を宣言すると通る。既存の手順と同じである。宣言する版は、更新前に解決されていた版を基準に選ぶ
-- `1.+`、`latest.release` などは `constraints` の通常の宣言では通らないはずである（`1.+` と直接の 2.5 の結果と実装からの判断で、この組み合わせは実行していない）。`constraints` の `strictly` を使う。これは決定 4 の例外で、低い固定の危険があるので、解決結果の版に合わせ、理由をコメントに残す
+- `1.+`、`latest.release` などは `constraints` の通常の宣言では通らないはずである（`1.+` と直接の 2.5 の結果と実装からの判断で、この組み合わせは実行していない）。`constraints` の `strictly` を使う。これは決定 3 の例外で、低い固定の危険があるので、解決結果の版に合わせ、理由をコメントに残す
 - 固定した版が古くなることは、この設定では検知されない。範囲の中に新しい版が出ても、固定の版のまま通過する
 
 確認していないこと:
@@ -252,7 +252,9 @@ M7: 結論として、推移的依存にも効く。POM と Gradle Module Metada
 - BOM の制約に書かれた動的な版と、Ivy のリポジトリ
 - Gradle のバージョンは 9.7.1 だけである。rss-reader のコピーは Gradle 9.1.0 で、対策が誤検知を起こさないことだけを確認した
 
-### 自前の検査
+### 自前の検査（廃止）
+
+この節は廃止した `checkResolvedVersions` の記録である。実装は 0605bc0 からの変更として a8d068e まで残っている。廃止の理由は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。
 
 `checkResolvedVersions` はグラフだけを解決し、次の 3 種類の不一致で失敗する。
 
@@ -294,13 +296,13 @@ M7: 結論として、推移的依存にも効く。POM と Gradle Module Metada
 
 検知して人が判断する場面:
 
-- 依存の更新で別の依存が上がったとき。上がった版を確認し、catalog を合わせる
+- 依存の更新で別の依存が上がったとき。`gradle.lockfile` の差分で上がった版を確認する
 - BOM を超えて上がったとき。意図した組み合わせかを確認する
-- plugin の classpath のズレ。Kotlin と Compose Compiler のように組み合わせに制約があるものは、catalog の値と実際の版が違うままにしない
+- plugin の classpath のズレ。Kotlin と Compose Compiler のように組み合わせに制約があるものは、`./gradlew buildEnvironment` で確認する
 
 固定する場面:
 
-- 脆弱性や不具合のために推移的依存を上げるとき。下げる方向の固定ではないので `strictly` は要らない。catalog に項目を足して `constraints` で宣言する（S7）。検査の対象になり、Dependabot も更新できる
+- 脆弱性や不具合のために推移的依存を上げるとき。下げる方向の固定ではないので `strictly` は要らない。catalog に項目を足して `constraints` で宣言する（S7）。lock に現れ、Dependabot も更新できる
 
   ```kotlin
   dependencies {
@@ -344,17 +346,9 @@ Dependabot が `gradle.lockfile` を更新する処理を手元で再現した�
 
 Dependabot の lockfile の更新が失敗しても、[エラーを log に出して元のファイルを返す](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L74-L76)ので、PR は古い lockfile のまま作られる可能性がある。
 
-採用した方式への影響:
+`gradle.lockfile` だけを使う構成での確認は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。
 
-- 依存の更新で別の catalog の項目を超えて上がると、Dependabot の PR の CI が検査で失敗する。これは意図した動作で、人が判断する合図になる。同じ PR で catalog を合わせる
-- 同じ `version.ref` を共有する項目は 1 行の変更で揃うが、別の `[versions]` の項目が連動して上がる場合は PR が分かれて、片方の CI が失敗する。`dependabot.yml` の `groups` で束ねられる可能性があるが、テーマ 2 の範囲なので確認していない
-- Dependabot の wrapper の更新は build file を[空にして実行する](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_updater/wrapper_updater.rb#L224-L232)ので、`apply(from = ...)` は影響しない
-
-未確認の点:
-
-- 実際の Dependabot の PR で上の動作になるか
-- `groups` で連動する更新を束ねられるか
-- `rootProject.file(...)` を使う `apply` が Dependabot の解析で問題にならないか。[取り込みの正規表現](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_parser.rb#L75)は文字列リテラルだけを対象にするので、無視されると読んでいる
+`groups` は main に入り、Gradle の更新は 1 つの PR に束ねられている（[`dependabot.yml`](https://github.com/appachan/android-supply-chain-lab/blob/80c3f5d/.github/dependabot.yml)、[ADR-0002](https://github.com/appachan/android-supply-chain-lab/blob/80c3f5d/docs/adr/0002-dependency-verification.md)）。
 
 Dependabot の security updates は Gradle では dependency submission API の利用が前提で、[推移的依存の alert では PR を作らない](https://docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories)。推移的依存の修正は `constraints` を人が足す前提になる。
 
@@ -373,39 +367,213 @@ Dependabot の security updates は Gradle では dependency submission API の�
 
 統合で注意する点:
 
-- 検査の成功は検証の成功を意味しない。検査の後に成果物を解決する `build` で検証が実行される。CI で `checkResolvedVersions` だけを実行する構成にしない
+- グラフだけの解決では検証は動かない。CI では成果物を解決する `build` を実行する
 - 解決結果を変える方式（`strictly`、`enforcedPlatform`、`constraints`、locking の lock 更新）を使うと `verification-metadata.xml` の更新が必要になる。catalog を解決結果に合わせるだけの修正では解決結果が変わらないので、更新は不要
 - 低い版への固定は、`verification-metadata.xml` に古い版が記録されていると検証を通る。`tracing` の 1.0.0 と 1.2.0 を記録した状態で 1.0.0 に固定すると成功した。検証は版の妥当性を判断しない
-- 依存の更新 PR で推移的依存の変化が見えるのは `verification-metadata.xml` の diff である。この前提で locking を不採用にしている。`verification-metadata.xml` をやめるときは locking を再検討する
-- main の `regenerate-verification-metadata.yml` は `build` を実行するので、merge すると検査も含まれる。ズレのある Dependabot PR では再生成のコマンドが失敗し、後続の `upload-artifact` の step は実行されないはずである。人が catalog を直すと PR の更新で再度動く想定だが、Actions の上では確認していない
-- 再生成とズレの検知を分けたい場合は、再生成のコマンドに `-x checkResolvedVersions` を足せばよい。検査を除いても記録される component は同じ（448）で、ズレは通常の CI で検知される。ファイルはテーマ 2 の範囲なので、このブランチでは変更していない
+- 最初の決定は、依存の更新 PR で推移的依存の変化が `verification-metadata.xml` の diff に見えることを前提にしていた。この前提は成り立たなかった（[論点 6](#論点-6-既存の手段との比較と見直し)）
 - Dependabot 自身が `verification-metadata.xml` を更新する実装は dependabot-core の Gradle の `lib` に見当たらなかった（`verification-metadata` の検索で 0 件）。main の再生成ジョブはこれを補うものである
+
+## 論点 6: 既存の手段との比較と見直し
+
+最初の決定は既存のツールと比較していなかった。自作を前提にせず、検査の目的から比較し直した。Dependabot を運用している環境を前提にする。実験は main の 80c3f5d のコピーで行った。Gradle 9.7.1、AGP 9.3.3、strict な `verification-metadata.xml` の状態である。
+
+### 前提の検証: metadata の diff に版の変化は出ない
+
+ADR-0002 の `pgp,sha256` では、信頼する鍵で署名された成果物は metadata にハッシュを持たないので、版が上がっても差分が出ない。実際の PR で確かめた。
+
+| PR | 実際の版の変化 | metadata の差分 | 差分に出た版 |
+| --- | --- | --- | --- |
+| [#1](https://github.com/appachan/android-supply-chain-lab/pull/1) AGP 9.3.3 から 9.5.0 | plugin の classpath の 114 module のうち 36。`bcprov-jdk18on` などの 1.79 から 1.80.2 を含む。`debugRuntimeClasspath` などは 0 | +6/-1 | 0 件。`trusted-key` の範囲の変更だけである |
+| [#3](https://github.com/appachan/android-supply-chain-lab/pull/3) 同じ更新と wrapper | 同上 | +11/-1 | `bc-jdk18on-bom-1.80.2.pom` の 1 件だけ |
+
+ライブラリの変更も同じである。Dependabot の PR ではないが、`activity` を 1.13.0 から metadata に未記録の 1.12.4 に変えて再生成すると、`debugRuntimeClasspath` の 102 module のうち 9 の版が変わったのに対し、metadata の差分は 11 行で、`component` として現れたのは `core` 1.16.0 と `core-ktx` 1.13.0 の 2 件だけだった。
+
+前提は成り立たない。metadata の diff は、新しい鍵と無署名の成果物を確認するものであり、推移的依存の変化を見るものではない。locking を不採用にした主な根拠が崩れたので、結論を見直した。
+
+### 時期による変化は failOnNonReproducibleResolution() で足りる
+
+足りる。[M7](#failonnonreproducibleresolution-と推移的依存) のとおり、80 通りで結果が変わり得るものはすべて失敗した。動的な版と changing な版がなければ、グラフは catalog と公開済みのメタデータから決まる。公開済みの成果物の差し替えは `verification-metadata.xml` が検知する。
+
+条件が 2 つある。
+
+- 設定が届く configuration に限る。subproject、settings、included build の classpath は個別に設定する（M7）
+- lock した configuration には設定できない。ただし同じ依存を見る `*LintChecksClasspath` に設定しておけば `build` で止まる。lock した `debugRuntimeClasspath` は、範囲を指定した依存と SNAPSHOT の依存を解決できてしまうが、`:app:lintVitalAnalyzeRelease` が `Could not resolve t:[1.0,2.0): ...dynamic versions` と `Could not resolve t:1.0-SNAPSHOT: ...changing versions` で失敗した。AGP の configuration の名前に依存している
+
+lock だけでは足りない。lock した範囲は新しい版を公開しても 1.9 のままだったが、SNAPSHOT は版が同じまま中身が変わり、strict でも通過した。[公式](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html)のとおり、検証は SNAPSHOT を対象にしない。なお lab のリポジトリには SNAPSHOT がないので、`core-ktx:1.99.0-SNAPSHOT` は `Could not resolve` で失敗する。SNAPSHOT のリポジトリを足すまで、この経路は実際には開かない。
+
+### 決定的だが意図しない版は標準機能で止められる
+
+Gradle は最も高い版を選び、BOM は上限にならない（M6）。したがって、対象を指定せずに事前に防ぐ標準機能はない。止める手段は 2 つあり、どちらも標準機能で足りる。
+
+`feature` と `other` の 2 module を足し、Compose BOM を 2025.06.00 にして、両方の `ui` が 1.8.2 の状態から `feature` だけに `activity-compose` を足して確かめた。
+
+| 手段 | 結果 |
+| --- | --- |
+| 何もしない | `feature` だけ 1.9.2 になり、`build` は成功する |
+| `gradle.lockfile` | `Resolved 'androidx.activity:activity-compose:1.13.0' which is not part of the dependency lock state` で失敗する。`--write-locks` の後、差分は `feature/gradle.lockfile` だけに出て、`ui` の 1.9.2 が見える。`other` は 1.8.2 のまま |
+| `constraints` の `version { reject("[1.9,)") }` | `Component is the target of multiple version constraints with conflicting requirements` で失敗する |
+| `failOnVersionConflict()` | ズレがなくても失敗する（M3） |
+| `strictly`、`enforcedPlatform` | 固定できるが低い固定の危険がある（論点 3、M6） |
+
+lock は変化を止めるが、Dependabot の PR では lock も更新されるので、CI は失敗しない。止めるのは PR の差分を読む人である。ADR-0002 が auto-merge を使わず人が確認すると決めているので、この運用に乗る。上げたくない module が分かっているときは `reject` で機械的に止める。
+
+残る限界:
+
+- 一度受け入れたモジュール間の差は、エラーにならない。`feature` の 1.9.2 と `other` の 1.8.2 は lock に並ぶだけである
+- plugin の classpath は lock しない。AGP の更新の 36 module の変化は PR に出ない。plugin の版は catalog の 1 行で決まり、その依存は plugin の公開者が決めたものなので許容する。内容は `verification-metadata.xml` が検証する
+- catalog と解決結果の不一致そのものは見ない
+
+### 候補の洗い出し
+
+保守の状況は 2026-10-31 に GitHub で確認した。
+
+| 候補 | 最新のリリース | open issue | 内容 | 判断 |
+| --- | --- | --- | --- | --- |
+| `gradle.lockfile`（標準） | Gradle 9.7.1 | なし | 解決結果を lock し、変化で失敗する。Dependabot が更新する | 採用 |
+| `failOnVersionConflict()`（標準） | 同上 | なし | 競合で失敗する | 不採用。ズレがなくても失敗する（M3） |
+| [dependency-guard](https://github.com/dropbox/dependency-guard) | 0.5.0（2024-02-05） | 26 | configuration ごとの baseline と比べる | 不採用。下記 |
+| [gradle-consistent-versions](https://github.com/palantir/gradle-consistent-versions) | 3.22.0（2026-10-27） | 54 | `versions.props` と `versions.lock` で版を一元管理する | 不採用。catalog を置き換える独自の形式で、Dependabot が取得するのは `gradle.lockfile` だけである（論点 4）。実行していない |
+| [gradle-dependency-lock-plugin](https://github.com/nebula-plugins/gradle-dependency-lock-plugin) | v17.2.1（2026-10-05） | 30 | 独自の lock | 不採用。標準の lock で足りる。実行していない |
+| [dependency-tree-diff](https://github.com/JakeWharton/dependency-tree-diff) と [action](https://github.com/usefulness/dependency-tree-diff-action) | 1.2.1（2024-01-02）、v2.4.0（2026-08-10） | 2、1 | base と head の依存ツリーの diff を出す。baseline を持たない | 不採用。失敗にならず、CI のジョブが増える。実行していない |
+| [dependency-submission](https://github.com/gradle/actions/blob/main/docs/dependency-submission.md) と [dependency-review-action](https://github.com/actions/dependency-review-action) | v6.4.1（2026-10-28）、v5.0.0（2026-05-08） | 44、40 | 依存のグラフを GitHub に送り、PR で確認する | 不採用。`contents: write` のジョブが増える。lab の `dependency-graph/sbom` は 404 で、リポジトリ設定の確認が必要である。実行していない |
+| [gradle-versions-plugin](https://github.com/ben-manes/gradle-versions-plugin)、[dependency-analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin)、[version-catalog-update](https://github.com/littlerobots/version-catalog-update-plugin) | v0.66.0、v3.20.0、v1.1.2 | 57、164、5 | 新しい版の提案、未使用の依存の検出、catalog の更新 | 対象外。解決結果のズレを見ない |
+
+### dependency-guard の実験
+
+Gradle 9.7.1、AGP 9.3.3 で動いた。root に `classpath`、app に `debugRuntimeClasspath` と `releaseRuntimeClasspath` を設定した。configuration cache も再利用された。[#113](https://github.com/dropbox/dependency-guard/issues/113) の root の classpath の失敗は再現しなかった。
+
+| シナリオ | 結果 |
+| --- | --- |
+| S1 catalog より推移的依存が高い | 検知しない（exit 0） |
+| `activity` の変更と推移的依存の変化 | 検知 |
+| Compose BOM の変更 | 検知 |
+| plugin の classpath（`kotlin = "2.2.0"`） | 検知。`classpath.txt` に 2.2.10 が出る |
+| AGP 9.5.0 | 検知。36 module の変化が出る |
+| 解決できない依存 | `- androidx.core:core-ktx:1.18.0` と削除として報告される（[#112](https://github.com/dropbox/dependency-guard/issues/112)） |
+
+検知の範囲は lock より広く、`failOn` と併用できる。plugin の classpath の変化を見られるのは lock にない利点である。不採用の理由は次のとおり。
+
+- 自然なアプローチで解決できる問題に、追加の plugin を足すことになる。plugin の classpath の変化を見たいという理由だけでは足りない
+- Dependabot は baseline を更新しない。再生成のジョブに `dependencyGuardBaseline` を足して、artifact とコミットの対象にする必要がある。[Renovate との連携](https://github.com/dropbox/dependency-guard/issues/60)や[自動の更新](https://github.com/dropbox/dependency-guard/issues/14)は issue のままである
+- 最新のリリースは 2024 年で、リポジトリの Gradle は 7.6.1 である。2024 年以降のコミットはリリース設定と README の修正だけである。Gradle 9 と AGP 9 の対応は宣言されておらず、今回動いただけである
+- `verification-metadata.xml` の差分が 62 行増えた。署名の鍵 `902E15693BB8846B` を鍵サーバーから取得できず `ignored-key` になり、plugin の jar はハッシュで受け入れることになった。鍵の信頼で確認できない成果物を、ビルド時に実行するコードとして足すことになる
+- module ごとに plugin と設定が必要である
+
+### gradle.lockfile だけの構成の実験
+
+`buildscript-gradle.lockfile` を作らない。Dependabot の処理は[現在の実装](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L58-L77)の init script と同じ引数で手元で実行した。実際の Dependabot の実行ではない。
+
+全 configuration を lock すると 299 行で、AGP の更新で lint などの lock がずれて `build` が失敗する。`*CompileClasspath` と `*RuntimeClasspath` に絞ると 109 行で、AGP だけの更新では lock が変わらず、それ以外の configuration に `failOn` を残せる。この形を採用した。
+
+| 確認 | 結果 |
+| --- | --- |
+| project の configuration に `failOnDynamicVersions` または `failOnChangingVersions` | `You must choose between the two modes` で失敗 |
+| root の `classpath` に `failOnNonReproducibleResolution()`、lock は project だけ | 成功。configuration ごとの制約なので問題ない |
+| catalog を lock より下げる（`activity` 1.12.4、lock は 1.13.0） | 黙って 1.13.0 になり `build` 成功。[公式の動作](https://docs.gradle.org/9.7.1/userguide/dependency_locking.html)である。使う版は変わらない |
+| catalog を lock より上げる | `Cannot find a version ... that satisfies the version constraints` で失敗 |
+| lock にない依存を足す | `not part of the dependency lock state` で失敗 |
+| ライブラリの更新で Dependabot のコマンド | strict でも成功。init script はグラフだけを解決するので検証が動かない。lock が更新される。metadata が必要なら `build` は再生成の後に成功する |
+| 新しい鍵やハッシュが必要な AGP の更新で同じコマンド | 失敗。root の classpath の解決が `Dependency verification failed` で止まる。Dependabot は[エラーを log に出して元の lockfile を返す](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L74-L77) |
+| 上の結果で AGP だけの更新 | lock は変わらないので問題ない |
+| AGP とライブラリを同時に更新（`groups` で起きる） | lock が古いまま残る。main の再生成のコマンドは `Cannot find a version` で失敗 |
+| 再生成のコマンドに `--write-locks` を足す | 2 回とも成功。lock の差分は +11/-11 で、strict の `build` も成功 |
+
+両立は条件付きである。ライブラリだけの PR はそのまま動く。plugin と同じ PR では Dependabot の lock の更新が失敗するので、再生成のジョブが lock も更新する必要がある。main の 2 つのワークフローに次の変更が要る。テーマ 2 のファイルなので、このブランチでは変更していない。Actions の上では実行していない。
+
+```diff
+--- a/.github/workflows/regenerate-verification-metadata.yml
++++ b/.github/workflows/regenerate-verification-metadata.yml
+-          ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
+-          ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
++          ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
++          ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+@@
+             gradle/verification-metadata.xml
+             gradle/verification-keyring.keys
++            app/gradle.lockfile
+--- a/.github/workflows/commit-verification-metadata.yml
++++ b/.github/workflows/commit-verification-metadata.yml
+```
+
+`commit-verification-metadata.yml` は、比較と `fileChanges` に lockfile を加える。`upload-artifact` は共通の親を基準に配置するので、ダウンロード先のパスも合わせて変更する。lockfile は検証なしで実行したジョブの出力なので、metadata と同じく信頼しないデータとして扱う。版の変更は PR の差分で人が確認する。
+
+### 比較
+
+| 観点 | 検査をやめる（`failOn` だけ） | `gradle.lockfile` と `failOn`（採用） | dependency-guard と `failOn` | 自作を続ける |
+| --- | --- | --- | --- | --- |
+| 時期による変化 | 防ぐ | 防ぐ（`build` の lint の configuration で） | 防ぐ | 防ぐ（`failOn` による） |
+| catalog との不一致 | 検知しない | 検知しない | 検知しない | 検知 |
+| catalog にない推移的依存の変化 | 検知しない | 検知、差分に出る | 検知、差分に出る | 検知しない |
+| BOM を超えた版 | 検知しない | 変化として検知 | 変化として検知 | 検知 |
+| plugin の classpath | 検知しない | 検知しない（S3 は stdlib の lock で間接的に失敗） | 検知 | marker の実装だけ検知 |
+| 特定の module だけのズレ | 検知しない | 検知。module ごとの差分 | 検知。設定した configuration | catalog の項目だけ |
+| Dependabot の PR | 変更なし | ライブラリはそのまま。plugin と同時なら再生成に `--write-locks` | baseline を再生成の流れに足す | 別の catalog の項目を超えると CI が失敗し、人が直す |
+| マルチモジュールの手間 | なし | なし。`subprojects` で適用し、lockfile は自動で増える | module ごとに設定 | なし |
+| 差分のレビュー | なし | 行に configuration 名が並ぶが読める | 最も読みやすい | 差分は出ず、失敗のメッセージだけ |
+| plugin を足すリスク | なし | なし | 鍵を取得できない plugin を足す | なし |
+| 保守 | なし | root の 9 行 | plugin の追従 | 100 行のスクリプト |
+
+### 判断
+
+検査をやめる案は採用しない。`failOn` だけでは compose ui の例が黙って通り、意図しない版が使われないという目的を満たせない。
+
+自作は置き換える。目的に照らすと、自作の検査が見ていたのは使う版そのものではなく、catalog の値との不一致だった。S1 では catalog を 1.13.1 と書いても使う版は 1.18.0 のまま変わらない。一方で、本当に見るべき推移的依存の変化は見えていなかった。lock はこれを標準機能で見せる。失うのは catalog との不一致の検知だけで、使う版は lock に残るので許容する。
+
+スクリプトの縮小も採用しない。`failOnNonReproducibleResolution()` の 2 行は標準機能で、残りの 100 行は目的に対して必要ない。
+
+以前のシナリオの結果は次のとおり。実装のコピーで `build` を実行した。verification-metadata はこのブランチにないので含まない。
+
+| シナリオ | 以前の検査 | 今の `build` | `--write-locks` の差分 |
+| --- | --- | --- | --- |
+| S0 変更なし | 成功 | 成功 | なし |
+| S1 catalog が推移的依存より低い | 失敗 | 成功。使う版は変わらない | なし |
+| S2 catalog に足すだけ | 成功 | 成功 | なし |
+| S3 `kotlin = "2.2.0"` | 失敗 | 失敗。lock の stdlib 2.4.21 でコンパイルが失敗する | +1/-1。更新後は成功 |
+| S4 `strictly("1.13.1")` | 失敗 | 失敗。`Cannot find a version` | +4/-3。更新後もコンパイルが失敗する（論点 3 の危険） |
+| S5 Compose BOM を下げる | 失敗 | 成功。lock の版のままで使う版は変わらない | +73/-47 |
+| S6 debug だけ `tracing` 1.3.0 | 失敗 | 失敗。`not part of the dependency lock state` | +3/-1。debug の行だけ変わる |
+| S7 `constraints` で上げる | 成功 | 失敗。意図した変更なので lock を更新する | +2/-1 |
+| S8 build script に直接低い版 | 成功 | 成功。使う版は変わらない | なし |
+| S9 `1.+` | 失敗 | 失敗。lint の configuration の `disallows usage of dynamic versions` | 更新しても失敗 |
+
+S1、S5、S8 が通るのは、使う版が変わらないからである。使う版が変わる S3、S4、S6、S7、S9 はすべて失敗する。
+
+main の 80c3f5d と merge した状態の CI は成功した（[run 41166135144](https://github.com/appachan/android-supply-chain-lab/actions/runs/41166135144)）。
 
 ## 運用手順
 
-ズレで CI が失敗したとき:
+`gradle.lockfile` と異なる版が解決されて CI が失敗したとき:
 
-1. 失敗のメッセージで module と configuration を確認する
-2. 原因を調べる
+1. メッセージで module を確認し、原因を調べる
 
    ```sh
    ./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency <group:name>
-   ./gradlew resolvedPluginInsight --dependency <group:name>
    ```
 
-3. 問題がなければ、`gradle/libs.versions.toml` を解決結果の版に上げる。plugin の場合は共有している `version.ref` の値を確認する
-4. 問題があれば、上げた依存の更新を見送るか、[論点 3](#論点-3-検知と固定の使い分け) に従って固定する
+2. 問題がなければ lock を更新して、差分をコミットする
 
-推移的依存を上げるときは、catalog に項目を足して `constraints` で宣言する。`constraints` を外すときは catalog の項目も消す。
+   ```sh
+   ./gradlew :app:dependencies --write-locks
+   ```
 
-新しい module を追加したときは追加の作業はない。`allprojects` で全 project に適用される。
+3. 問題があれば、更新を見送るか、`reject` で止める
+
+Dependabot の PR では、次を確認する。
+
+- `gradle.lockfile` の差分。catalog の変更で説明できない module の変化がないか。特に Compose のように一式で揃う module が、一部の module でだけ変わっていないか
+- plugin の更新の PR では `gradle.lockfile` が更新されたか。古いままなら再生成のジョブを確認する
+
+推移的依存を上げるときは、catalog に項目を足して `constraints` で宣言する。範囲を指定した依存が入って失敗したときも同じである。`constraints` を外すときは catalog の項目も消す。
+
+上げたくない module は `constraints` の `reject` で止める。理由を `because` に書き、解除の条件を決める。
+
+catalog の版を下げるときは lock も更新する。更新しないと使う版は変わらない。
 
 ## rss-reader に適用するときの差分
 
-コピーで確認した。元のリポジトリは変更していない。
+コピー（227fb9c）で確認した。元のリポジトリは変更していない。CI の step の追加は要らない。lock はすべてのビルドで効く。
 
-1. `gradle/resolved-versions.gradle.kts` をコピーする
-2. `build.gradle.kts` に追加する
+1. `build.gradle.kts` に追加する
 
    ```diff
    +buildscript {
@@ -417,19 +585,18 @@ Dependabot の security updates は Gradle では dependency submission API の�
         ...
     }
    +
-   +allprojects { apply(from = rootProject.file("gradle/resolved-versions.gradle.kts")) }
+   +subprojects {
+   +    configurations.configureEach {
+   +        if (name.endsWith("CompileClasspath", ignoreCase = true) || name.endsWith("RuntimeClasspath", ignoreCase = true)) {
+   +            resolutionStrategy.activateDependencyLocking()
+   +        } else {
+   +            resolutionStrategy.failOnNonReproducibleResolution()
+   +        }
+   +    }
+   +}
    ```
 
-3. 検査で見つかったズレを直す
-
-   ```diff
-   -junitVintage = "5.10.2"
-   +junitVintage = "5.12.2"
-   ```
-
-   `mockk` 1.14.3 が `junit-jupiter` 5.12.2 を経由して `junit-bom` 5.12.2 を要求し、`junit-vintage-engine` を上げている。7 module の `debugUnitTestRuntimeClasspath` で確認した。テストはすでに 5.12.2 で動いているので、解決結果は変わらない
-
-4. settings の plugin と `build-logic` にも設定する。`allprojects` と root の `buildscript` は settings と included build の classpath に届かない（[M7](#failonnonreproducibleresolution-と推移的依存)）
+2. settings と `build-logic` に設定する。root の `buildscript` と `subprojects` は届かない（[M7](#failonnonreproducibleresolution-と推移的依存)）
 
    ```diff
    --- a/settings.gradle.kts
@@ -451,74 +618,53 @@ Dependabot の security updates は Gradle では dependency submission API の�
    +configurations.configureEach { resolutionStrategy.failOnNonReproducibleResolution() }
    ```
 
-5. CI に step を足す。rss-reader の CI は `build` ではなく個別のタスクを実行しているので、`check` に組み込むだけでは実行されない
+3. lockfile を生成してコミットする。root の `dependencies` は subproject を辿らないので、module ごとの `dependencies` を並べるか、[Dependabot の init script](#再現手順) を使う。確認では init script を使った
 
-   ```diff
-   +      - name: Resolved versions
-   +        if: ${{ !cancelled() }}
-   +        run: ./gradlew checkResolvedVersions
+   ```sh
+   ./gradlew :app:dependencies :shared:domain:dependencies --write-locks
    ```
 
 確認の結果:
 
-- `./gradlew checkResolvedVersions` は差分 3 の前に上記の 1 件で失敗し、差分 3 の後に成功した
-- `./gradlew build --continue -x test` が成功した（743 タスク）。`failOnNonReproducibleResolution` による失敗はない
-- 差分 4 と subproject の対策（[M7](#failonnonreproducibleresolution-と推移的依存)）を足した新しいコピー（rss-reader 227fb9c）でも、`checkResolvedVersions`、`:build-logic:convention:classes`、上記の `build` が成功した。subproject の対策は今の rss-reader には不要である。subproject の build script に `version` 付きの plugin を書いていない
-- plugin の classpath は root の `plugins` に `apply false` で集まっているので検査できる。`rssreader.*` の convention plugin の classpath である `build-logic` と、settings の `foojay-resolver-convention` は検査の対象外
-- CI の `setup-gradle` は rss-reader の判断であり、この差分では変更しない
+- 10 module で計 2,729 行の `gradle.lockfile` ができた。全 configuration を lock すると 4,739 行である
+- `./gradlew build --continue -x test` が成功した（730 タスク）。誤検知はない
+- `junit-vintage-engine` の catalog の 5.10.2 は変更しない。使う版は lock の 5.12.2 である。直すなら catalog を上げるだけでよい
+- plugin の classpath の lock、`build-logic` の lock は行わない
 
 ## 再現手順
 
-ベースラインと検査の確認:
-
-```sh
-./gradlew checkResolvedVersions
-./gradlew buildEnvironment
-./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency androidx.core:core-ktx
-./gradlew resolvedPluginInsight --dependency org.jetbrains.kotlin:kotlin-gradle-plugin
-./gradlew resolvedPluginInsight --dependency org.jetbrains.kotlin:kotlin-stdlib
-```
-
-ライブラリのズレ（S1）:
+依存の変化が止まること:
 
 ```diff
---- a/gradle/libs.versions.toml
-+++ b/gradle/libs.versions.toml
- androidxActivity = "1.13.0"
-+androidxCore = "1.13.1"
- androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
-+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
      implementation(libs.androidx.activity.compose)
-+    implementation(libs.androidx.core.ktx)
++    debugImplementation("androidx.tracing:tracing:1.3.0")
 ```
 
-plugin の classpath のズレ（S3）:
+`./gradlew build` が `not part of the dependency lock state` で失敗し、`./gradlew :app:dependencies --write-locks` の差分に debug の行だけが出る。
 
-```diff
---- a/gradle/libs.versions.toml
-+++ b/gradle/libs.versions.toml
--kotlin = "2.4.21"
-+kotlin = "2.2.0"
+Dependabot の lock の更新の再現は、[`write_init_script`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_updater/lockfile_updater.rb#L308-L335) の内容を取り出して次を実行する。
+
+```sh
+./gradlew --init-script dependabot-locking.init.gradle dependabotResolveAll --write-locks --no-daemon
 ```
 
-どちらも `./gradlew checkResolvedVersions` が失敗する。
+このコマンドの実行では `settings-gradle.lockfile` もできるが、中身はないのでコミットしない。`gradle.lockfile` の `empty=` の行は実行するコマンドで有無が変わるが、解決には影響しない。
 
-GitHub Actions では、`ci.yml` の trigger に一時ブランチを足すコミットを d8b7f5f の上に載せて確認した。ブランチは確認後に削除した。`ci.yml` は変更していない。`build` が検査を含むからである。
+## main に統合するときの注意
 
-| 条件 | 結果 | 実行 |
-| --- | --- | --- |
-| ズレなし | 成功。`:checkResolvedVersions` と `:app:checkResolvedVersions` が実行された | [run 41075091703](https://github.com/appachan/android-supply-chain-lab/actions/runs/41075091703) |
-| S1 | 失敗。`:app:checkResolvedVersions FAILED`、`androidx.core:core-ktx: declared 1.13.1, resolved 1.18.0` | [run 41075099381](https://github.com/appachan/android-supply-chain-lab/actions/runs/41075099381) |
-| S3 | 失敗。`:checkResolvedVersions FAILED`、`compose-compiler-gradle-plugin: requested 2.2.0 ..., resolved 2.2.10` | [run 41075106953](https://github.com/appachan/android-supply-chain-lab/actions/runs/41075106953) |
+- `README.md` の 2 か所が競合する。テーマ 2 の行とテーマ 3 の行の両方を残す
+- 上記の再生成のワークフローの変更を同時に入れる。入れないと、plugin とライブラリを同時に更新した PR の再生成が失敗する
+- 統合後に実際の Dependabot の PR で、ライブラリだけの更新と、plugin を含む更新の両方を確認する
 
 ## Consequences
 
-- catalog の値と実際に使う版の不一致が、ライブラリ、BOM、plugin のどれでも CI で止まる
-- 動的な版と changing な版は、推移的依存を含めて使えない。SNAPSHOT を使う検証は一時的に設定を外す必要がある
-- 結果が変わらない動的な版でも失敗する場合がある（`1.+` と高い固定の版など）。そのときは `constraints` の `strictly` を例外として使う
+- 使う版が変わると、ライブラリの compile と runtime の classpath で CI が止まるか、PR の `gradle.lockfile` の差分に出る
+- 依存の更新で `gradle.lockfile` の差分のレビューが増える。自作のスクリプトはなくなる
+- 動的な版と changing な版は、推移的依存を含めて使えない。lock した configuration の分は lint の configuration で止まるので、AGP の configuration の名前に依存する
+- catalog の値と使う版の不一致は検知しない。正しい版は `gradle.lockfile` にある
+- plugin の classpath の推移的依存の変化は PR に出ない
+- `verification-metadata.xml` は版の変化を見るものではない。ADR-0002 が確認するのは新しい鍵と無署名の成果物である
+- plugin と同じ PR でライブラリを更新すると、再生成のジョブが lock を更新する必要がある。main のワークフローの変更は統合のときに行う
 - subproject、settings、included build の classpath は `failOnNonReproducibleResolution()` の対象外なので、使い始めるときに設定を足す
-- 検査は catalog に宣言した範囲だけを見る。推移的依存の変化は `verification-metadata.xml` に依存する
-- `apply(from = ...)` のスクリプトなので convention plugin より型の支援が弱いが、`build-logic` を持たないこのリポジトリと、持っている rss-reader の両方に同じファイルで適用できる
-- Gradle の embedded Kotlin の更新で plugin の classpath の `kotlin-stdlib` が変わることは検査しない

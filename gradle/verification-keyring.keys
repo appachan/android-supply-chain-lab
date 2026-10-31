@@ -2072,15 +2072,6 @@ UOXnXPP7mF30ChAY5F7mJ9BTe9RZZmnjA2cUdtHLvchd4fiFbu191pbeIk/BSf10
 =eNI6
 -----END PGP PUBLIC KEY BLOCK-----
 
-pub    55C7E5E701832382
------BEGIN PGP PUBLIC KEY BLOCK-----
-
-xo0EVdDLQQEEAJMtYCaTA56YsP5RzQzPvqVTaR2nZ27qRk36blHB9WmXK+NHpGeH
-PHgq59mLPVueo2/M5k/fFrCe36jHePP31gYpFtueeYDfsofHwod0WhsHyC7JfG8d
-jEnSczTCmOHRZ3ed9ef6SeWUozYCQAX/tAbpoCthe0lTDYhFhkzVCe/FABEBAAE=
-=DygE
------END PGP PUBLIC KEY BLOCK-----
-
 pub    571A5291E827E1C7
 uid    Central Repository sync with maven.java.net (Used for signing artifacts that support syncing maven.java.net with the Central Repository) <central@sonatype.com>
 

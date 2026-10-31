@@ -16,6 +16,7 @@ Gradle の依存検証（`gradle/verification-metadata.xml`）は、ビルドが
 
 - 検証はチェックサムと PGP 署名を併用する（`--write-verification-metadata pgp,sha256`、`verify-signatures` は `true`）
 - keyring は armored の `gradle/verification-keyring.keys` を commit する
+- `verify` は鍵サーバーを使わない（`<key-servers enabled="false">`）。再生成では到達できる 2 台から鍵を取得する
 - `*-sources.jar` と `*-javadoc.jar` は `trusted-artifacts` で検証の対象から外す
 - Dependabot の Gradle の PR では、依存のコードを実行する読み取り専用のジョブと、書き込むジョブを分ける
   - `Regenerate verification metadata`（`pull_request`、`contents: read`）が metadata を再生成して artifact にする
@@ -38,7 +39,7 @@ Google Maven の成果物に署名がないという前提は、現在は正し�
 | 項目 | 件数 |
 | --- | --- |
 | 信頼する鍵（`trusted-key`） | 56 |
-| ハッシュまたは個別の鍵で検証する component | 42 |
+| ハッシュまたは個別の鍵で検証する component | 41 |
 | 無署名の成果物の行（`Artifact is not signed`） | 50 |
 
 無署名として残るのは、署名の開始より前の `androidx` の版（`androidx.arch.core` など）、`com.google.testing.platform`、`bundletool`、`jetifier` などである。
@@ -244,6 +245,118 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict が成
 
 2 回で揃う保証はない。最終的な判定は空の環境の `verify` であり、欠けていれば失敗する側に倒れる。`verify` が `.pom` で失敗し、`from repository` が親の配布元と違うときは、配布元の `.asc` で署名を確認してから、その POM の sha256 を metadata に手で足す。
 
+## 検証の対象
+
+公式の説明は Gradle 9.7.1 のドキュメントによる。
+
+[Verification Metadata](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sub:verification-metadata):
+
+> Gradle verifies any artifact downloaded via its dependency management engine, including but not limited to:
+> - Artifact files (e.g., JAR files, ZIPs) used during the build
+> - Metadata artifacts (POM files, Ivy descriptors, and Gradle Module Metadata)
+> - Plugins (both project and settings plugins)
+> - Artifacts resolved via advanced dependency resolution APIs
+>
+> Gradle does not verify changing dependencies (specifically SNAPSHOT versions) or locally produced artifacts (such as JARs generated during the build itself).
+
+[Scope](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sec:verification-scope):
+
+> Specifically, the same file applies to all subprojects, the root project, and buildSrc.
+
+[`verify-metadata`](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sec:disabling-metadata-verification):
+
+> By default, Gradle verifies both artifacts (JARs, ZIPs, etc.) and their metadata files (POM files, Ivy descriptors, Gradle Module Metadata).
+>
+> Disabling metadata verification reduces security. Compromised metadata files could introduce malicious transitive dependencies into your build.
+
+[`trusted-artifacts`](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sec:skipping-javadocs):
+
+> By default, Gradle verifies all downloaded artifacts, including javadocs and sources.
+> This can cause issues with IDEs that automatically download them during import.
+
+ドキュメントには buildscript、`files()`、ファイルリポジトリの記述がない。ここは [`ExternalModuleComponentResolverFactory`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/ExternalModuleComponentResolverFactory.java) と実験を根拠にする。このクラスはリポジトリごとに検証のラッパーを被せていて、local と remote の両方の経路が通り、buildscript と project の区別がない。SNAPSHOT は [`DependencyVerifyingModuleComponentRepository`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/DependencyVerifyingModuleComponentRepository.java) が changing module を飛ばしている。
+
+未知の依存を含む最小のビルドを、空の metadata で実行した結果は次のとおり。
+
+| 対象 | 根拠 | 結果 |
+| --- | --- | --- |
+| リリース版（ファイルリポジトリ） | ソース | 失敗（検証される） |
+| project の plugin | 公式 | 失敗（`detachedConfiguration1`） |
+| settings の plugin | 公式 | 失敗（`detachedConfiguration1`） |
+| buildscript の `classpath` | ソース | 失敗（`configuration 'classpath'`） |
+| SNAPSHOT（ファイルリポジトリ） | 公式、ソース | 成功（検証されない） |
+| `files()` の jar | ソース | 成功（検証されない） |
+
+依存管理の外で取得するものは対象外である。Gradle の配布物は ADR-0001 の `distributionSha256Sum` が扱う。POM と `.module` は PR #1 の失敗、jar と aar は論点 5 で確認した。
+
+## 鍵サーバー
+
+`<key-servers enabled="false">` を採用する。[公式](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sec:local-keyring-only)は次のとおりで、どちらも実際に確認した。
+
+> Only the local keyring file will be used, and if a key is missing, the build will fail.
+>
+> If you are asking Gradle to generate verification metadata and an existing file sets enabled to false, this flag will be ignored so that potentially missing keys can be downloaded.
+
+設定は次のようにする。
+
+```xml
+<key-servers enabled="false">
+   <key-server uri="https://keyserver.ubuntu.com"/>
+   <key-server uri="https://keys.openpgp.org"/>
+</key-servers>
+```
+
+| 確認 | 結果 |
+| --- | --- |
+| 現在の keyring で空の環境の strict | 成功。[実装](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/verification/signatures/DefaultSignatureVerificationServiceFactory.java)は `EmptyPublicKeyService` を使い、外部に問い合わせない |
+| keyring に鍵がない依存の strict | 失敗。`Key servers are disabled, this can indicate that you need to update the local keyring` |
+| 再生成 | `Will use key servers to download missing keys` を出して鍵を取得する。on と off の取得の成功率に差はなかった（3 回中 1 回と 2 回） |
+| 設定の保持 | `enabled="false"` と子要素の `key-server` は再生成で残る。検査のスクリプトの設定の比較も通る |
+| Dependabot の PR | [PR #4](https://github.com/appachan/android-supply-chain-lab/pull/4) で下記のとおり成功 |
+
+鍵の取得の失敗は設定ではなく既定のサーバーの一覧の問題である。[既定](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/DefaultKeyServers.java)の 4 台には解決できない `ha.pool.sks-keyservers.net` が含まれ、[順序はランダムで、リトライの上限は 5 秒](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/security/src/main/java/org/gradle/security/internal/PublicKeyDownloadService.java)である。公開鍵は curl なら毎回 1 秒未満で取得できた。lab の構成で新しい鍵が必要な再生成を比較した結果は次のとおり。
+
+| key-server | 鍵の取得に成功 |
+| --- | --- |
+| 既定の 4 台 | 11 回中 7 回 |
+| 2 台に限定 | 5 回中 5 回 |
+
+因果は機構からの推測で、試行数は少ない。ただし追加の費用はないので 2 台に絞る。
+
+新しい鍵が必要な更新の確認。一時的に `snakeyaml:1.33` を `app/build.gradle.kts` に足した。2.x は署名鍵が違い、Dependabot のグループ更新が新しい鍵を要求する。
+
+| 設定 | 結果 | 実行 |
+| --- | --- | --- |
+| 既定の 4 台 | 鍵の取得に失敗。`ignored-key` とハッシュに落ち、`Ignored keys` に出た。`verify` は成功 | [run 41165764108](https://github.com/appachan/android-supply-chain-lab/actions/runs/41165764108)、[run 41165999242](https://github.com/appachan/android-supply-chain-lab/actions/runs/41165999242) |
+| 2 台 | 鍵を取得。keyring が 15 行増え、`trusted-key` が `org.yaml:snakeyaml:2.7` に限定で追加された。`verify` は成功 | [run 41169104329](https://github.com/appachan/android-supply-chain-lab/actions/runs/41169104329)、[run 41169362370](https://github.com/appachan/android-supply-chain-lab/actions/runs/41169362370) |
+
+コミットは [e16a89a](https://github.com/appachan/android-supply-chain-lab/commit/e16a89af3c202b83308d55c7442ea9eb89c5ab33) で、`verified: true` である。本文の `unknown owner` は、この鍵の keyring に UID がないことを示す。確認後、一時依存は `main` から外した。
+
+off の効果は信頼の範囲ではなく、`verify` の決定性にある。信頼の根拠は metadata の fingerprint で、鍵サーバーから取得した鍵が自動で信頼されることはない。ただし再生成は例外で、取得した鍵を信頼に追加するので、人の確認が必要な点は変わらない。
+
+既知の揺らぎとして、鍵が取得できたのに keyring に入らない場合があった。最小の構成で `Exported 0 keys` が 1 回目で 10 回中 5 回、2 回の再生成の後で 10 回中 2 回起きた。既定の 4 台の構成で、原因は確認していない。`trusted-key` は書かれるので、on では `verify` が鍵サーバーから取得して隠れる。off なら `verify` が失敗して気付ける。
+
+## 記事との比較
+
+[Best Practices for Gradle Dependency Verification](https://britter.dev/blog/2026/06/01/gradle-dependency-verification-best-practices/)（2026-06-01）と [Enabling Gradle Dependency Verification](https://britter.dev/blog/2025/02/10/gradle-dependency-verification/)（2025-02-10）を比較した。方針は Dependabot の環境向けに決める。記事は Renovate が前提で、Renovate は[再生成を `dependencies` で 1 回実行する](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/gradle/artifacts.ts)。Dependabot は metadata を更新しないので、この ADR の再生成のワークフローが必要になる。
+
+| 推奨 | 判定 | 理由 |
+| --- | --- | --- |
+| checksum より PGP の鍵を信頼する | 採用 | 論点 1 |
+| armored の keyring | 採用 | 論点 1 |
+| 鍵サーバーを無効にする | 採用（上記） | keyring の欠けを検出できる。記事の「安全性への影響なし」は `verify` については同意する。再生成では無視されるので、記事の「鍵の判断を人が持てる」はこの設定だけでは実現しない |
+| sources と javadoc を信頼する | 採用 | 論点 2 |
+| 鍵の取得の失敗を手で keyring に足す | 手順として採用 | `ignored-key` になったときの選択肢 |
+| 署名のない成果物の値を手で確認する | 部分的に採用 | 確認の対象としてコミット本文に出す。`origin` の書き換えは運用しない |
+| metadata を変更するのは人の確認のため（ロボットの仕事ではない） | 採用 | コミットはワークフローが作るが、承認は人が行う。記事の「変更は稀であるべき」は Dependabot の更新のたびに差分が出るので、検査と分類で補う |
+| `verify-metadata` を `false` にする | 不採用 | 公式が `reduces security` としている。POM は依存の版を変えられるので、グループ単位で鍵を信頼すると、署名された古い版へ差し替えられても検知できない可能性がある（推測、未検証）。実測の削減は 314 行から 286 行で約 9% だけだった。この設定なら再生成は 1 回で strict が通り、2 回の再生成の問題は消えるが、検証を減らす理由にはしない |
+| 鍵の `version` を消して全ての版を信頼する | 不採用 | 記事自身が最も危険な判断としている。metadata の信頼 79 件のうち 23 件は版を限定している。Gradle が生成した範囲のまま残し、次の版で再度確認する |
+| 手で component を `trusted-key` に移す、ハッシュを消す | 不採用 | 手の編集はワークフローの再生成と競合し、差分が読みにくくなる |
+| metadata にコメントで注釈する | 不採用 | 再生成でコメントは消える（手元で確認）。判断の記録はコミット本文と ADR に残す |
+| `gradle-*-src.zip` を `trusted-artifacts` に入れる | 保留 | IntelliJ の sync の対策である。Android Studio で確認していないので、失敗してから足す |
+| `failOnNonReproducibleResolution()` か依存のロック | 対象外 | テーマ 3 で判断する。記事の BouncyCastle の版の範囲の例は、metadata が更新と無関係に壊れる原因になる |
+| `org.gradlex.jvm-dependency-conflict-resolution` | 不採用 | lab の依存は少なく、検証の対象の plugin が増える。rss-reader で依存の重複が問題になれば見直す |
+
 ## 実際の PR での確認
 
 [PR #3](https://github.com/appachan/android-supply-chain-lab/pull/3) は AGP 9.5.0 と Gradle 9.8.2 のグループ更新である。
@@ -295,6 +408,8 @@ GRADLE_USER_HOME="$(mktemp -d)" sh -c '
 '
 ```
 
+`ignored-key` が出たら、鍵の取得の一時的な失敗か確認する。残すと該当の成果物はハッシュで検証される。鍵を入れるなら再生成をやり直すか、手元で再生成する。`verify` が `Key servers are disabled` で失敗したら、keyring に鍵が入っていないので同じように直す。
+
 使わなくなった版の行は Gradle が消さない。ときどき `components` を空にして生成し直す。これは差分が大きいので、Dependabot の PR とは分ける。
 
 検証の失敗を調べるときは、`build/reports/dependency-verification/` の HTML を読むか、`org.gradle.dependency.verification.console=verbose` を付ける。`--dependency-verification lenient` は検証を無効にするので、CI では使わない。
@@ -306,6 +421,7 @@ rss-reader は読むだけで、まだ適用していない。
 - `dependabot.yml` がないので追加する
 - `ci.yml` に `workflow_dispatch` を追加する。`verify` のジョブ名はそのままでよい
 - `concurrency` は `github.ref` で分かれている。dispatch と PR の run は ref が違うので互いに取り消さない想定だが、確認していない
+- `key-servers` の設定は lab と同じものを使う。`build-logic` と foojay の依存があるので、最初の生成で `ignored-key` がなくなるまで確認する
 - `setup-gradle` を使っている。ADR-0001 の理由で、再生成のジョブには入れない。キャッシュから入った依存も検証されることは手元で確認したが、`setup-gradle` との組み合わせは確認していない
 - 再生成のタスクを CI と揃える。`spotlessCheck`、`detekt`、`lint`、`test` は実行時に依存を解決するので、`build` に含まれない分があれば明示する
 - `build-logic` は included build で、[公式](https://docs.gradle.org/current/userguide/dependency_verification.html)によればルートの metadata を使う。`settings.gradle.kts` の foojay の plugin も検証の対象になる
@@ -323,9 +439,11 @@ rss-reader は読むだけで、まだ適用していない。
 - 新しい成果物の初回の信頼は、人の確認に依存する。配布元が侵害されていれば再生成も同じものを記録する
 - グループ単位の鍵の信頼は、鍵が盗まれると新しい成果物も通す
 - Google Maven のプラグインには cooldown が効かない
+- `verify` は鍵サーバーに依存しない。keyring の欠けは `verify` の失敗になる
 
 ## 未解決
 
+- `Exported 0 keys` の原因は確認していない。再生成のやり直しの手順（PR の Approve workflows to run、`@dependabot rebase`）も実際の PR では確認していない
 - dispatch した `verify` が ruleset の必須チェックを満たすかは確認していない。check run は head の SHA にあり、app も 15368 で、`pull_requests` に PR が入っている。一方で、`statusCheckRollup` は空、`gh pr checks` は `no checks reported`、`mergeStateStatus` は `UNSTABLE` のままだった。`action_required` の check suite が同じ commit にあることが関係している可能性があるが、原因は分かっていない。lab には ruleset がないので merge の可否は判定できない。確認には lab に一時的な ruleset を設定し、Approve workflows to run の前後で比較する必要がある。満たさなければ、Approve workflows to run を人の手順にして `workflow_dispatch` をやめるか、GitHub App の token に切り替える
 - 実際の ruleset の下での署名の確認はしていない。`verified: true` までの確認である
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める

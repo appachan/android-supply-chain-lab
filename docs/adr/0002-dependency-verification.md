@@ -354,7 +354,7 @@ off の効果は信頼の範囲ではなく、`verify` の決定性にある。�
 | 手で component を `trusted-key` に移す、ハッシュを消す | 不採用 | 手の編集はワークフローの再生成と競合し、差分が読みにくくなる |
 | metadata にコメントで注釈する | 不採用 | 再生成でコメントは消える（手元で確認）。判断の記録はコミット本文と ADR に残す |
 | `gradle-*-src.zip` を `trusted-artifacts` に入れる | 保留 | IntelliJ の sync の対策である。Android Studio で確認していないので、失敗してから足す |
-| `failOnNonReproducibleResolution()` か依存のロック | 対象外 | テーマ 3 で判断する。記事の BouncyCastle の版の範囲の例は、metadata が更新と無関係に壊れる原因になる |
+| `failOnNonReproducibleResolution()` か依存のロック | 対象外 | ADR-0003 の論点 8 で比較した。記事の BouncyCastle の版の範囲の例は、metadata が更新と無関係に壊れる原因になる |
 | `org.gradlex.jvm-dependency-conflict-resolution` | 不採用 | lab の依存は少なく、検証の対象の plugin が増える。rss-reader で依存の重複が問題になれば見直す |
 
 ## 実際の PR での確認

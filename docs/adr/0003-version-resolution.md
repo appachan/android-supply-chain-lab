@@ -30,8 +30,9 @@ Accepted
 5. `buildscript-gradle.lockfile` は使わない。plugin の classpath の推移的依存の変化は PR で見えないが、許容する
 6. lock の更新は `./gradlew --write-locks build` で行う。再生成のワークフローも同じ `--write-locks` を使い、metadata と lockfile を一緒にコミットする
 7. `build-logic` の依存は metadata で検証し、lock はしない
+8. SNAPSHOT は使わないことを運用の前提とする。使うプロジェクトでは lock と検証が効かないので、方式の見直しが必要である（[前提の理由](#snapshot-を使わない前提)）
 
-最初の決定は、自作の検査を基本にし、locking を採用しないというものだった。その前提は誤りだったので見直した。経緯と比較は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。rss-reader と同じ種類の構成での確認は[論点 7](#論点-7-rss-reader-相当の構成での確認)に書く。以下の論点 1 から 5 の実験は記録として残す。
+最初の決定は、自作の検査を基本にし、locking を採用しないというものだった。その前提は誤りだったので見直した。経緯と比較は[論点 6](#論点-6-既存の手段との比較と見直し)に書く。rss-reader と同じ種類の構成での確認は[論点 7](#論点-7-rss-reader-相当の構成での確認)、strict 制約を先に使う推奨との比較は[論点 8](#論点-8-britter-の記事の-strict-の推奨との比較)に書く。以下の論点 1 から 5 の実験は記録として残す。
 
 ## 論点 1: 再現
 
@@ -632,7 +633,7 @@ lock と `failOn` を分けたことで、lock した configuration に入る動
 | `:app`、`:shared:ui`、`:shared:domain` の `implementation` | 失敗。`:shared:domain` は lint がないが、Android の consumer の lint で止まる |
 | 各 module の `testImplementation`、`androidTestImplementation` | 通過。範囲は lock で固定されるが、SNAPSHOT は中身が変わりうる |
 
-test と androidTest だけの依存の SNAPSHOT は止まらない。出荷する classpath には入らず、lab と rss-reader のリポジトリには SNAPSHOT の配布元がないので、許容する。配布元を足すときは見直す。
+test と androidTest だけの依存の SNAPSHOT は止まらない。[SNAPSHOT を使わない前提](#snapshot-を使わない前提)で扱う。
 
 ### build-logic の扱い
 
@@ -679,6 +680,107 @@ Compose BOM 2026.08.00、AGP 9.3.3 で metadata と lock を作った状態か�
 手元の値はすべて macOS の 1 回の測定である。Actions の再生成の 1 module の値は Dependabot の PR のもので、依存の内容が少し違う。lock の有無を分けて測ってはいないが、lock の検査に専用のタスクはないので、増分の大半は module を足したことによる見込みである。
 
 rss-reader の 10 module では計 2,729 行で、全 module の `build` は 824 タスクである。
+
+## 論点 8: britter の記事の strict の推奨との比較
+
+[Best Practices for Gradle Dependency Verification](https://britter.dev/blog/2026/06/01/gradle-dependency-verification-best-practices/) の結論と、この ADR の結論を比べた。
+
+### 記事の推奨
+
+記事の主題は、解決が再現しないと metadata が古くなることである。対策を 2 つ挙げ、`either one is enough on its own` とする。
+
+1. `failOnNonReproducibleResolution()` で非再現の入力を拒否し、曖昧な依存には strict 制約を宣言する。大きなプロジェクトでは platform に集める。記事の第一の推奨である
+2. dependency locking。曖昧な依存すべてに制約を宣言するコストが利点を上回るときの代替で、`fall back to locking only when the cost of declaring constraints for every ambiguous dependency outweighs the benefit` と書く
+
+locking の欠点として次の 2 つを挙げる。
+
+- SNAPSHOT に効かない（`doesn't help with changing versions`）
+- 解決された結果を写すだけで、strict 制約が与える `I have thought about this version` の信号がない
+
+### なぜ lockfile を選ぶか
+
+`failOnNonReproducibleResolution()` は記事と同じく採用している。違いは lock を足したことで、これは記事の代替の使い方とは目的が違う。記事の lock は再現性のためだが、この ADR の lock は決定的だが意図しないバージョンを PR で見るためである。
+
+rss-reader のコピー（227fb9c）で、必要な制約の数を数えた。
+
+| 数え方 | 件数 |
+| --- | --- |
+| 記事の条件の曖昧な依存（全 module と plugin の classpath の、動的なバージョンと SNAPSHOT の要求） | 0 |
+| lock と同じ範囲を制約で押さえるときの module（group と name の組み合わせ） | 370 |
+| そのうち catalog にない推移的依存 | 322 |
+| module と configuration によってバージョンが異なる module | 69 |
+
+記事の条件なら制約は 0 件で、`failOnNonReproducibleResolution()` だけで済む。時期による変化についてはこれで足り、記事の推奨はこの ADR の決定 1 と矛盾しない。
+
+ただし、それでは[決定的だが意図しないバージョン](#決定的だが意図しない版は標準機能で止められる)は止まらない。compose ui の例は曖昧さがないので `failOn` は通過する。strict 制約で止めるなら、推移的依存を含めて 370 件の制約が要る。さらに 69 件は今も複数のバージョンが解決されているので、platform の 1 行に置くと解決結果が変わる。この件数と、次に示す Dependabot の対象外の問題と下がる危険から、制約を推移的依存の全体に広げる形は採用しない。lock は 2,729 行になるが、人が書くのではなく生成する。
+
+### 失うもの
+
+失うのは「このバージョンを考えた」という明示の信号である。lock の行は、`--write-locks` を実行した時点の解決結果であり、誰かがそのバージョンを選んだことを示さない。Dependabot の PR の lock の差分を読まずに merge すれば、意図しないバージョンも記録される。
+
+代わりになるのは PR の差分のレビューで、ADR-0002 の人の確認に乗る。理由が必要な module は、この ADR の決定 3 のとおり `constraints` に `because` を書いて明示する。strict 制約を全体に置かないだけで、明示の宣言をやめるわけではない。
+
+### Dependabot との関係
+
+形ごとに、`dependabot-gradle` 0.402.0 の実物の `FileParser` と `FileUpdater` を手元で実行した。`file_parser.rb` は dependabot-core の 85379652 と同一である。実際の Dependabot の PR は未確認である。
+
+| 形 | 更新対象か | 結果 |
+| --- | --- | --- |
+| catalog の通常のバージョンを `version.ref` で参照し、`strictly(libs.versions.x.get())` で使う | なる | `[versions]` の値が更新され、`strictly` はそれを読むので追随する。lab で `activity` を 1.12.4 から 1.13.0 に変えると解決結果も 1.13.0 になり、`:app:assembleDebug` が成功した |
+| `[versions]` にあるが、`[libraries]` と `[plugins]` から参照されず、build script だけが読む | ならない | パーサーは `[libraries]` と `[plugins]` しか見ない |
+| catalog の rich version（`version = { strictly = "..." }`） | ならない | [`dependencies_for_declarations`](https://github.com/dependabot/dependabot-core/blob/85379652e4ef784fdd38bf4598b0b347832f805b/gradle/lib/dependabot/gradle/file_parser.rb#L335-L337) が飛ばす |
+| rich version を `[versions]` に置いて `version.ref` で参照する | ならない | 実物のパーサーの結果に出ない |
+| 記事の形（`implementation("g:a") { version { strictly("1.80") } }`） | ならない | 座標にバージョンがないので拾われない |
+| `"g:a:1.0!!"` の省略形 | ならない | 実物のパーサーの結果に出ない |
+| `"g:a:6.0"` に同じ行で `strictly("6.0")` を書く | なる | 1 行の形では `FileUpdater` が両方を 6.1 に書き換えた。複数行の形は実行していない |
+
+strict を使うなら、catalog の項目を `version.ref` で参照し、`strictly(libs.versions.x.get())` で読む形だけが Dependabot の更新を受ける。記事の例の形では更新されないので、修正のバージョンも人が上げる必要がある。
+
+### strictly と、より高いバージョンを要求する更新
+
+`t` を `strictly("1.0")` で固定した状態で、`t:2.0` を要求する `d:2.0` に更新した。`:app:assembleDebug` で実行し、`failOn` だけで lock のない構成にした。
+
+| 固定の場所 | `d` の場所 | 結果 |
+| --- | --- | --- |
+| 固定なし | `:app` | 2.0 |
+| `:app` の `constraints` | `:app` | 黙って 1.0 に下がる。ビルドは成功 |
+| `:shared:ui` と `:app` の両方 | `:app` | 黙って 1.0 に下がる。ビルドは成功 |
+| `:shared:ui` の `constraints` | `:shared:ui` | 黙って 1.0 に下がる（`:app` の runtime も 1.0）。ビルドは成功 |
+| `:app` が `platform()` で読む platform | `:app` | 黙って 1.0 に下がる。ビルドは成功 |
+| `:shared:ui` の `implementation` の `constraints` | `:app` | 失敗。`Cannot find a version`。compile は 2.0 のままで runtime で失敗する |
+| `:shared:ui` の `api` の `constraints` | `:app` | 失敗。compile と runtime の両方 |
+| 固定なしで lock あり | `:app` | `d` の更新だけで失敗。`--write-locks build` で `t` が 1.0 から 2.0 に変わり、差分に出る |
+
+失敗するか下がるかは、固定を宣言した場所で決まる。固定が要求元の祖先にあれば、要求は無視されて下がる。祖先になければ競合で失敗する。platform が下げるのは、[`platform()` が strict を endorse する](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/dsl/dependencies/DefaultDependencyHandler.java#L333-L338)ためである。記事が大きなプロジェクトに勧める platform は、黙って下がる側に入る。
+
+実際の依存でも確かめた。
+
+| 固定 | 結果 |
+| --- | --- |
+| `:app` の `core-ktx` に `strictly("1.13.1")` | 解決は成功し 1.13.1 に下がる。`compileDebugKotlin` が `Cannot access 'androidx.core.app.PictureInPictureProvider'` で失敗 |
+| `:shared:ui` の `core` に `strictly("1.13.1")` | `Component is the target of multiple version constraints with conflicting requirements`。`activity-compose` 1.13.0 が 1.18.0 を要求する |
+
+既存の実験との整合は次のとおり。
+
+- E3、E4 は project が直接宣言した場合で、上の表の下がる側に当たる。E3 と同じくコンパイルで失敗する場合と、E4 のように通る場合がある。上の偽の依存はコードから呼ばれないので成功している
+- [既定は最も高い版、ただし例外がある](#既定は最も高い版ただし例外がある)の節で、公式の説明と E3、E4 が合わないと書いた点は、宣言の場所の違いで説明できる。祖先にない strict は公式のとおり失敗する
+- 論点 6 の S4 が `Cannot find a version` で失敗するのは、`strictly` の下がる動作ではなく、lock の strict と `strictly` の衝突である。lock があると黙って下がらない
+
+strict 制約は、下がった結果がビルドの成否に現れないことがある。lock では、同じ更新が失敗し、差分に上がったバージョンが出る。これも推移的依存の全体に strict を置かない理由である。
+
+## SNAPSHOT を使わない前提
+
+この ADR の方式は、SNAPSHOT を使わないことを運用の前提とする。使うプロジェクトでは見直しが必要である。lock は座標を固定するだけで中身を固定せず、[`verification-metadata.xml` の検証も SNAPSHOT を対象にしない](https://docs.gradle.org/9.7.1/userguide/dependency_verification.html#sub:verification-metadata)。test と androidTest だけの依存では `failOnNonReproducibleResolution()` も届かない。
+
+前提の理由は次のとおり。
+
+- SNAPSHOT は安定も不変も保証しない開発中のバージョンである。[Maven の Getting Started](https://maven.apache.org/guides/getting-started/index.html) の What is a SNAPSHOT version? に `provides no guarantee the code is stable or unchanging` とある
+- Maven の標準のリリース手順は、SNAPSHOT の依存が残っていないことを確認する。[`release:prepare`](https://maven.apache.org/maven-release/maven-release-plugin/usage/prepare-release.html) の `Check that there are no SNAPSHOT dependencies` である
+- [Maven Central のリリース](https://central.sonatype.org/publish/requirements/)は `-SNAPSHOT` で終わるバージョンを使えない
+
+正式なバージョンの修正を一時的に試す用途はあるが、main や出荷するビルドに残さない。
+
+これらの出典は Maven の慣習である。Gradle の Android アプリの一般的な運用を調べた結果ではないので、この前提は慣習からの判断である。
 
 ## 運用手順
 
@@ -810,3 +912,5 @@ Dependabot の lock の更新の再現は、[`write_init_script`](https://github
 - plugin と同じ PR でライブラリを更新すると、再生成のジョブが lock を更新する
 - module を足すと `subprojects` の設定は自動で届くが、included build を足したときは `failOnNonReproducibleResolution()` の設定を足す
 - `build` は androidTest のコンパイルを確認しない。依存の解決と成果物の検証は lint の経由で行われる
+- SNAPSHOT を使うプロジェクトには、この方式をそのまま適用できない
+- lock の行は「このバージョンを考えた」という信号にならない。PR の差分のレビューで補う

@@ -823,7 +823,7 @@ rss-reader は読むだけで、まだ適用していない。
 - `ci.yml` に `workflow_dispatch` を追加する。`verify` のジョブ名はそのままでよい
 - `concurrency` は `github.ref` で分かれている。dispatch と PR の run は ref が違うので互いに取り消さない想定だが、確認していない
 - `key-servers` の設定は lab と同じものを使う。`build-logic` と foojay の依存があるので、最初の生成で `ignored-key` がなくなるまで確認する
-- `setup-gradle` を使っている。ADR-0001 の理由で、再生成のジョブには入れない。キャッシュから入った依存も検証されることは手元で確認したが、`setup-gradle` との組み合わせは確認していない
+- `setup-gradle` を使っている。再生成には空の環境が要るので、再生成のジョブには入れない。キャッシュから入った依存も検証されることは手元で確認したが、`setup-gradle` との組み合わせは確認していない
 - 再生成のタスクを CI と揃える。`spotlessCheck`、`detekt`、`lint`、`test` は実行時に依存を解決するので、`build` に含まれない分があれば明示する
 - `trusted-artifacts` に `<trust group="gradle" name="gradle"/>` を入れ、Groovy の鍵を `org.apache.groovy` の group で信頼する（「Android Studio の sync と gradle:gradle」）。理由は `reason` に書く
 - `build-logic` は included build で、ルートの metadata を使う。lab に同じ構成を足して確認した（ADR-0003 の論点 7）。`settings.gradle.kts` の foojay の plugin も検証の対象になる

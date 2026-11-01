@@ -58,9 +58,9 @@ sources と javadoc: 全成果物の sources と javadoc の取得を `ArtifactR
 
 plugin と buildscript: 検証の対象に含まれる。PR #1 の最初の失敗も buildscript の `classpath` で起きた。
 
-再生成は同じコマンドで 2 回実行する。原因と根拠は「2 回の再生成が必要な原因」に書く。
+再生成は空の `GRADLE_USER_HOME` で 1 回実行する。親や BOM の POM の行が足りないときは、`verify` の失敗を見て人が足す。原因と根拠は「2 回の再生成が必要な原因」と「採用する手順」に書く。
 
-手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。strict モードのビルドに使った環境で再生成すると、不要な行が 19 行追加された。macOS と Linux で同じ 19 行だったので、OS の差ではない。
+手元で再生成するときは、空の `GRADLE_USER_HOME` を使う。理由は実測した余分な行である。`build` の後のキャッシュで再生成すると 24 行、普段の `GRADLE_USER_HOME` では 44 行増えた。以前の strict モードのビルドの後の 19 行も同じ形で、macOS と Linux で同じだったので OS の差ではない。原因は「2 回の再生成が必要な原因」の仕組み 2 である。これとは別に、[#19228](https://github.com/gradle/gradle/issues/19228)には、キャッシュがあると redirect された子の親と BOM の行が書かれないという報告がある。これは報告の引用で、lab では再現していない。
 
 最初の生成は鍵サーバーの影響を受ける。1 回目は 17 件の鍵が取得できず `ignored-key` になった。同じ鍵を curl で取得すると成功するので一時的な失敗である。keyring に鍵が揃った状態で `ignored-keys`、`trusted-keys`、`components` を消して生成し直すと、ignored key は 0 件になり、2 回の生成の差分もなくなった。Linux の CI で同じ入力から再生成しても差分は出なかった（[run 41073618308](https://github.com/appachan/android-supply-chain-lab/actions/runs/41073618308)）。
 
@@ -206,6 +206,8 @@ One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc
 | 再生成 2 回、`--rerun-tasks` あり | 11 | 成功（上の行と同一のファイル） |
 | `help` で再生成、続けて `build` で再生成 | 11 | 成功 |
 
+この表の追加行は 1 module の時点の値である。今の main の multi-module の構成では、同じ更新の追加行は 1 回で 2 行、2 回で 7 行になる。基準の metadata が違うためで、1 回と 2 回の差はどちらも 5 行である。今の構成の 5 行は `bc-jdk18on-bom` の component の 5 行であることを差分で確かめた。
+
 Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict モードのビルドが成功した（[run 41160771357](https://github.com/appachan/android-supply-chain-lab/actions/runs/41160771357)）。更新のない `main` では、再生成しても `--refresh-dependencies` を付けても差分は 0 行だった。
 
 条件を分けた最小の再現。Gradle 9.7.1、子の POM を別のリポジトリに置き、本物の署名付き BOM を参照する。keyring は固定した。
@@ -224,28 +226,195 @@ Linux の CI でも `--rerun-tasks` なしの 2 回の再生成で strict モー
 - POM のみの BOM では親の POM（`logging-parent-7.pom`、`apache-27.pom`）も同じように失敗した
 - `.module` がある BOM は、最小の再現では 3 回実行しても揃わなかった。POM のハッシュを手で足すと strict モードのビルドは成功した
 
-### 推測
+### 原因（確定）
 
-- writer の登録は最初の 1 件が残るので、空の環境では親を解決した Central の経路が先に登録され、署名が有効なのでハッシュが不要と判断される。strict モードは Google の経路も別に検証するので、署名もハッシュもない状態で失敗する
-- 2 回目はキャッシュがあるので親の経路が通らず、子の経路だけが登録され、署名が見つからないのでハッシュが書かれる
-- `.module` の有無と実物の結果の違いから、この説明は完全ではない。最小の再現の `.module` ありの BOM では 2 回目に揃わないが、lab の実物は同じ BOM で揃う。BC のライブラリへの依存と buildscript の `classpath` を足しても再現しなかった
+Gradle 9.7.1 の dependency-management の jar に計測のログを足した配布物で、再生成の実際の経路を記録した。計測の改変は scratchpad だけで、lab には入れていない。原因は別々の 2 つの仕組みである。
+
+仕組み 1: 再生成の 1 回目に行が書かれない（問い: AGP 9.5.0 の更新の `bc-jdk18on-bom`）。
+
+- [`DependencyVerifyingModuleComponentRepository`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/DependencyVerifyingModuleComponentRepository.java#L135-L150) は、先に `delegate.resolveComponentMetaData` を呼び、その後で `sources` の各 POM について `onArtifact` を呼ぶ。空の環境では `sdk-common` の解析が親と BOM の解決を含むので、BOM の自分の経路（Maven Central）が子の経路（Google）より必ず先に通る
+- [`WriteDependencyVerificationFile`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/writer/WriteDependencyVerificationFile.java#L474-L482) は `onArtifact` の repository の名前を使わず、`LinkedHashSet` に入れる。[`VerificationEntry`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/writer/VerificationEntry.java#L79-L85) の同一性は id、kind、file なので、後から来た Google の経路は捨てられる
+- `.asc` の取得は登録したエントリのクロージャが行うので、Maven Central の経路だけが確かめられ、署名が有効でハッシュは書かれない
+- strict モードは [`VerificationQuery(artifact, repositoryId)`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/ChecksumAndSignatureVerificationOverride.java#L123) で repository ごとに検証するので、Google の経路が署名もハッシュもない状態で失敗する
+
+記録は次のとおりである。
+
+| 実行 | `bc-jdk18on-bom-1.80.2.pom` の最初の登録 | 後の経路 | `.asc` | 結果 |
+| --- | --- | --- | --- | --- |
+| 1 回目 | Maven Central（自分の経路） | Google（`sdk-common`）は捨てられる | 成功 | 行なし |
+| 2 回目 | Google（`sdk-common`）。子がキャッシュから読まれ、BOM の自分の経路を通らない | なし | Google で 404 | `Artifact is not signed` のハッシュ |
+
+仕組み 2: 部分的なキャッシュで余分な行が書かれる（問い: 普段の `GRADLE_USER_HOME` の 44 行）。
+
+- 解析したばかりの子の `sources` の id は [`DefaultModuleComponentArtifactIdentifier`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/repositories/metadata/AbstractRepositoryMetadataSource.java#L95) である。ディスクのキャッシュから読み戻すと、[`DefaultMetadataFileSourceCodec`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/repositories/metadata/DefaultMetadataFileSourceCodec.java#L81-L82) が必ず `ModuleComponentFileArtifactIdentifier` を作る
+- 2 つのクラスの id は `equals` が成り立たないので、同じファイルに `PgpEntry` が 2 つできる
+- 並びは `PgpEntry`、`PgpEntry`、`ChecksumEntry`、`ChecksumEntry` になり、[`registerEntryToBuilder`](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/ivyservice/ivyresolve/verification/writer/WriteDependencyVerificationFile.java#L337-L344) の id の照合が外れて `pgpEntry` が null になる。署名が有効でも `reason` のないハッシュが書かれる
+- 混在の条件は、同じ実行の中に「キャッシュから読む子」と「新しく解析する子」があることである。`build` は一部の configuration しか解決せず、再生成の writer は全 configuration を解決するので、`build` だけのキャッシュの後の再生成で混在する
+- 同じことは POM 以外でも起きる。`androidx.core:core` の `core-1.16.0.aar` と `core-1.18.0.aar` は同じファイルに 2 種類の id があり、components を消して空の環境で再生成しても、1 回目から `reason` のないハッシュが書かれる。2 回目も同じで、差分は 0 行である。この 2 行は再生成で再び出るので、消しても戻る
+
+| 実行 | `Default` の id | `File` の id | 両方が混在したファイル |
+| --- | --- | --- | --- |
+| 空の環境の再生成の 1 回目 | 8,505 | 0 | 0 |
+| 同じ環境の 2 回目 | 0 | 8,268 | 0 |
+| 空の環境の `build` の後の再生成 | 1,690 | 6,655 | 7 |
+
+同じ手順で `reason` のない行を再現した。`build` を `--dependency-verification off` で実行しても strict モードで実行しても、どちらも 24 行増えた。
+
+判定は次のとおりである。
+
+| 説明 | 判定 | 根拠 |
+| --- | --- | --- |
+| 同じ POM の Maven Central と Google の経路で、最初の 1 件だけが記録される | 仕組み 1 については正しい | 上の記録と反事実 2 |
+| 同じ説明を 44 行にも当てはめる | 誤り | `guava-parent` の経路は Maven Central だけで Google を通らず、`.asc` も成功している。44 行に `reason` がなく、仕組み 1 の `Artifact is not signed` の形でもない |
+| ほかのビルドのキャッシュの混入 | 由来は不明 | 仕組み 2 の条件はキャッシュの持ち主を問わない。このプロジェクト自身の `build` のキャッシュでも同じ形が再現するので、ほかのビルドは必要条件ではない。44 行の component は lab の依存のグラフにある。44 行のキャッシュがどのビルドで作られたかは分からない |
+
+因果の確認として writer を直した版を作った。lab には入れていない。
+
+| 修正 | 手順 | 結果 |
+| --- | --- | --- |
+| 反事実 1: `onArtifact` で METADATA の id のクラスをそろえる | `build` の後に再生成 | 余分な行が 24 行から 0 行になった |
+| 反事実 2: 登録しなかった経路の `.asc` も確かめ、ない経路があればハッシュを要求する | AGP 9.5.0 の更新を空の環境で 1 回再生成 | 未改変の Gradle の検証が成功した。metadata は通常の 2 回の結果と `reason` の文言だけが違う |
+
+最初に観測した 44 行そのものは再現していない。その後の実行で `~/.gradle` の状態が変わり、複製でも増えなかった。仕組みの確認は 24 行の再現と、44 行に `reason` がないことからの判断である。`org.apache:apache` と `org.sonatype.oss:oss-parent` の信頼する鍵の行が増える流れは追っていない。同じ混在の実行で増えることまでを確認した。
+
+`.module` の有無は原因ではなかった。子を HTTP で配信し、`.module` のある `bc-jdk18on-bom` を import すると、1 回目は検証が失敗し、2 回目と 3 回目は成功した。lab の実物と同じである。以前の「3 回でも揃わない」はファイルのリポジトリの再現で、子が毎回解析されるための差と見られる（ファイルのリポジトリでの追跡はしていない）。
+
+### sha256 だけの方式
+
+`verify-signatures` を `false` にし、`trusted-keys`、`ignored-keys`、`components` を消した状態から、空の環境で `--write-verification-metadata sha256 --write-locks build` を 1 回だけ実行した。
+
+| 確認 | `sha256` だけ | 現在の `pgp,sha256` |
+| --- | --- | --- |
+| 必要な再生成 | 1 回。2 回目の差分は 0 行 | 2 回 |
+| main の依存の metadata | 4,017 行、574 component、950 ハッシュ | 630 行、82 component |
+| AGP 9.5.0 の更新の差分 | +466 行（59 component、116 ハッシュ）、削除 0 | +7 行 |
+| 別の空の環境の検証 | 成功（main の状態、AGP の更新の後） | 成功 |
+| lockfile | 差分なし | 差分なし |
+
+ハッシュの行は親の POM の経路に関係なく書かれるので、1 回で揃う。代わりに、全成果物が最初の利用の信頼（Trust on first use）になり、更新のたびに数百行のハッシュをレビューすることになる。署名の検証がないので、公開者の鍵による確認も失う。再生成の回数のために検証を弱めないので、不採用とする。Android Studio の sync はこの方式では確認していない。
+
+### 発生範囲
+
+仕組み 1 の条件は、親や BOM が子と別の repository にあり、子の repository に `.asc` がないことである。lab では `sdk-common` が AGP の更新で初めてこの条件に入る。
+
+- `sdk-common` の POM のうち `bc-jdk18on-bom` を参照するのは、確かめた 32.3.3、32.4.0 までは 0 件で、32.5.0 からである
+- main の AGP 9.3.3 の metadata に `bc-jdk18on-bom` の行はない
+- GitHub のコード検索で `bc-jdk18on-bom` を含む `verification-metadata.xml` は 122 件、同じファイルに `Artifact is not signed` も含むのは 4 件（AndroidX、getknit/knit など）だった（2026-11-01）。この 4 件が同じ条件かは確認していない
+- AndroidX の [commit 3f5f74f12e](https://github.com/androidx/androidx/commit/3f5f74f12e836d9883898ccba458dd0f0df2cf0e) は、同じ POM の 5 行を足すコミットである。メッセージは `Playground runners are failing due to missing checksums for this artifact` で、行は `origin="Generated by Gradle"`、`reason="b/565694056"` である。bug は非公開で、行を手で書いたのか、原因が仕組み 1 と同じなのかは確認できていない
+
+main の AGP 9.3.3 で、`components` を消さずに空の環境で 1 回だけ再生成した。
+
+| 更新 | 追加行 | 別の空の環境の検証 |
+| --- | --- | --- |
+| 変更なし | 0 | 成功 |
+| okhttp 4.12.0 の追加 | 1 | 成功 |
+| Compose BOM を 2026.08.00 に変更 | 0 | 成功 |
+| `activity` を 1.12.4 に変更 | 2 | 成功 |
+| `junit` を 4.13.1 に変更 | 0 | 成功 |
+
+この条件に当たらない更新は 1 回で足りた。ただし、当たるかどうかは事前に分からない。
+
+BOM の行を手で足す方法も確かめた。AGP 9.5.0 の更新の前に metadata へ足して、空の環境で 1 回だけ再生成した。
+
+| 手で足した行 | 別の空の環境の検証 |
+| --- | --- |
+| `bc-jdk18on-bom` 1.80.2（更新先と同じ） | 成功 |
+| `bc-jdk18on-bom` 1.80（更新先と違う） | 失敗（`bc-jdk18on-bom-1.80.2.pom ... from repository Google`） |
+
+手で足す方法は、バージョンが変わる更新では足りない。
+
+configuration cache は関係しない。どちらの実行も `Calculating task graph as configuration cache cannot be reused due to --write-verification-metadata` を出した。当時のスクリプトの 2 回と `--no-configuration-cache` の 2 回で、metadata と lockfile は一致した。
 
 ### 公式の issue との関係
 
 - [#19228](https://github.com/gradle/gradle/issues/19228)（open）と [#20194](https://github.com/gradle/gradle/issues/20194)（open）は、親や BOM の POM が metadata から欠ける問題である。Gradle の開発者は、解析済みの descriptor がキャッシュにあると親をたどらないことが原因だと[説明している](https://github.com/gradle/gradle/issues/20194#issuecomment-1652095447)。欠ける向きは warm cache で、`--refresh-dependencies` で解消した[報告](https://github.com/gradle/gradle/issues/19228)がある
 - lab の現象は別の原因である。空の環境で起き、`--refresh-dependencies` では直らず、`sha256` だけなら起きない。POM を見ていないのではなく、署名が有効と判断された結果ハッシュが書かれない。#20194 には空の `GRADLE_USER_HOME` でも起きるという[報告](https://github.com/gradle/gradle/issues/20194)があり、同じ現象の可能性があるが、再現手順がないので確認していない
 - [#24948](https://github.com/gradle/gradle/issues/24948)（open）は、親 POM の `<pgp>` と `trusted-key` が非決定的に変わる報告である。手元の strict モードのビルドの後に増えた 19 行は同じ形だが、関係は確認していない
-- 同じ原因の issue は見つけられなかった。[#33500](https://github.com/gradle/gradle/issues/33500) は PR ではなく open の issue で、#19228 の troubleshooting の追加を求めている。現在の[公式ドキュメント](https://docs.gradle.org/current/userguide/dependency_verification.html)にはキャッシュの状態と `--refresh-dependencies` の記述がない
+- 原因まで同じと言える issue は見つけられなかった。もっとも近いのは #20194 で、[空の `GRADLE_USER_HOME` でも起きるという報告](https://github.com/gradle/gradle/issues/20194#issuecomment-2451918741)は「子の処理中に親の何かがキャッシュされるのでは」と推測している。これは仕組み 1 の説明になっている可能性があるが、その報告に再現手順がなく、同じ条件かは確認していない。`.asc` の repository の違いに触れた issue は見つからなかった
+- 仕組み 2 の報告は見つからなかった。[#24948](https://github.com/gradle/gradle/issues/24948) の `oss-parent` の信頼する鍵の行は、仕組み 2 の実行で増える行と同じ形だが、同じ原因かは確認していない。[#19228](https://github.com/gradle/gradle/issues/19228) はキャッシュがあると行が減る報告で、仕組み 2 の増える向きとは逆である。[#38503](https://github.com/gradle/gradle/issues/38503) は #19228 の重複として閉じられた。[#32632](https://github.com/gradle/gradle/issues/32632) と [#18569](https://github.com/gradle/gradle/issues/18569) は `pgp` と checksum の両方を書くかという別の話である
+- [#19228 の 2026 年の報告](https://github.com/gradle/gradle/issues/19228#issuecomment-5256639663)は `sha256` だけの再生成で、`--refresh-dependencies` が効く。lab の現象とは別である
+- 検索した語は、`verification-metadata` と parent pom、BOM、repository、signature、`.asc` の組み合わせのほか、`ModuleComponentFileArtifactIdentifier`、`DefaultModuleComponentArtifactIdentifier`、`WriteDependencyVerificationFile`、`DependencyVerifyingModuleComponentRepository`、`ChecksumAndSignatureVerificationOverride`、`entriesToBeWritten`、`VerificationEntry`、`PgpEntry` である。2 つの id のクラスと writer の問題を結びつけた報告はなかった
+- [#33500](https://github.com/gradle/gradle/issues/33500) は PR ではなく open の issue で、#19228 の troubleshooting の追加を求めている。現在の[公式ドキュメント](https://docs.gradle.org/current/userguide/dependency_verification.html)にはキャッシュの状態と `--refresh-dependencies` の記述がない
 
 ### 一般的な運用例
 
-公開リポジトリでは `--refresh-dependencies` が多い。[Adyen](https://github.com/Adyen/adyen-android/blob/main/.github/workflows/update_verification_metadata.yml)、[Airflow](https://github.com/apache/airflow/blob/main/scripts/ci/prek/regenerate_java_sdk_verification_metadata.py)、[Besu](https://github.com/besu-eth/besu/blob/main/README.md)、[RSKj](https://github.com/rsksmart/rskj/blob/master/scripts/update-verification-metadata.sh)、[keycloak-mock](https://github.com/TNG/keycloak-mock/blob/main/.github/workflows/update-verification-metadata.yml) はいずれも `sha256` だけで、キャッシュがある前提の対策である。[AndroidX](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` で `--clean` を使い #19228 をコメントで参照している。[Renovate](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/gradle/artifacts.ts) は `--write-verification-metadata <hashTypes> dependencies` を 1 回実行する。[Dependabot で署名も使う例](https://github.com/SimonMarquis/Android-Playground/blob/main/.github/workflows/dependabot-gradle-dependencies.yaml)も 1 回である。`pgp,sha256` を 2 回実行する例は見つけられなかった。`--refresh-dependencies` が効くのは `sha256` の運用で、`pgp` の lab では効かないので、結果は矛盾しない。
+公開リポジトリでは `--refresh-dependencies` が多い。[Adyen](https://github.com/Adyen/adyen-android/blob/main/.github/workflows/update_verification_metadata.yml)、[Airflow](https://github.com/apache/airflow/blob/main/scripts/ci/prek/regenerate_java_sdk_verification_metadata.py)、[Besu](https://github.com/besu-eth/besu/blob/main/README.md)、[RSKj](https://github.com/rsksmart/rskj/blob/master/scripts/update-verification-metadata.sh)、[keycloak-mock](https://github.com/TNG/keycloak-mock/blob/main/.github/workflows/update-verification-metadata.yml) はいずれも `sha256` だけで、キャッシュがある前提の対策である。[AndroidX](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` で `--clean` を使い #19228 をコメントで参照している。この `--clean` は Gradle のオプションではなく、AndroidX 独自の `gradlew` が `GRADLE_USER_HOME` などを消す機能である。未改変の Gradle では未知のオプションとして失敗する。[Renovate](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/gradle/artifacts.ts) は `--write-verification-metadata <hashTypes> dependencies` を 1 回実行する。[Dependabot で署名も使う例](https://github.com/SimonMarquis/Android-Playground/blob/main/.github/workflows/dependabot-gradle-dependencies.yaml)も 1 回である。`pgp,sha256` を 2 回実行する例は見つけられなかった。`--refresh-dependencies` が効くのは `sha256` の運用で、`pgp` の lab では効かないので、結果は矛盾しない。
 
 ### 採用する手順
 
-同じコマンドを空の環境で 2 回実行する。`--rerun-tasks` は結果が変わらないので使わない。`--refresh-dependencies` は空の環境では効果がないので使わない。
+空の環境で 1 回だけ再生成する。足りない親や BOM の POM の行は、`verify` の失敗を見て人が足す。`--rerun-tasks` は結果が変わらないので使わない。`--refresh-dependencies` は空の環境では効果がないので使わない。
 
-2 回で揃う保証はない。最終的な判定は空の環境の `verify` であり、欠けていれば失敗する側に倒れる。`verify` が `.pom` で失敗し、`from repository` が親の配布元と違うときは、配布元の `.asc` で署名を確認してから、その POM の sha256 を metadata に手で足す。
+1 回の実行を採用する理由は次のとおりである。
+
+- 2 回目は意味を理解しにくい手順である
+- 今の lab で 2 回目が効くのは `bc-jdk18on-bom-1.80.2.pom` だけである
+- 2 回目は署名のある POM に `reason="Artifact is not signed"` という不正確な行を書く
+- 足りないときは `verify` が対象のファイルを名指しで失敗するので、見落とさない
+
+代償として、バージョンが変わる更新では PR の `verify` が失敗し、人の作業が入る。手で足した行はバージョンが変わると効かない（下の「発生範囲」）。2 回の実行なら、この作業は要らない。
+
+検証を減らさず、Gradle も直さずに、手作業なしで一般に 1 回にする方法は見つかっていない。`verify-metadata` を `false` にする、`sha256` だけにする、のように検証を減らせば 1 回で通るが、採用しない。
+
+[writer は build scope のサービス](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/DependencyManagementBuildScopeServices.java#L312-L333)で、[build ごとに `beforeModelDiscarded` で動く](https://github.com/gradle/gradle/blob/v9.7.1/platforms/software/dependency-management/src/main/java/org/gradle/api/internal/artifacts/DependencyManagementBuildScopeServices.java#L411-L418)。先勝ちは 1 つの writer のインスタンスの中で成り立つので、必要なのは Gradle の起動が 2 回ではなく、子がディスクのキャッシュにある状態で動く writer である。確かめたところ、1 回の起動でも揃う場合があった。
+
+| 手順 | 再生成 | 別の空の環境の検証 |
+| --- | --- | --- |
+| 最小の再現: 同じ依存を持つ included build を root の前に解決する | 1 回の起動 | 成功 |
+| lab の AGP 9.5.0 の更新: `build-logic` に `compileOnly("com.android.tools:sdk-common:32.5.0")` を足す | 1 回の起動 | 成功。metadata は通常の 2 回の結果と差分なし |
+
+| 不採用の案 | 理由 |
+| --- | --- |
+| 再生成を 2 回実行する（以前の採用） | 上の理由による。手作業は要らないが、1 行のために理解しにくい手順を常に実行し、不正確な `reason` を書く |
+| included build で子を先にキャッシュする | 検証は通るが、どの子が必要かを更新の前に人が知る必要があり、そのバージョンの管理も増える |
+
+仕組み 1 が起きるのは特定の条件のときだけなので、それ以外の更新は 1 回で足りる（下の「発生範囲」）。
+
+AGP 9.5.0 の更新で、前段を変えて比べた。すべて未改変の Gradle で、判定は別の空の環境の検証である。
+
+| 手順 | metadata の追加行 | 別の空の環境の検証 | 余分な行 |
+| --- | --- | --- | --- |
+| 再生成を 2 回 | 7 | 成功 | なし |
+| `help` で再生成、次に `build` で再生成 | 7 | 成功 | なし |
+| `--write-verification-metadata pgp,sha256 --dry-run build`、次に再生成 | 7 | 成功 | なし |
+| `--dependency-verification off build`、次に再生成 | 14 | 成功 | 7 行 |
+| `--dependency-verification off help`、次に再生成 | 33 | 成功 | 26 行 |
+
+前段が再生成なら writer が全 configuration を解決するので、2 回目はすべてキャッシュから読まれ、仕組み 2 が起きない。前段が通常のビルドだと部分的なキャッシュになり、余分な行が入る。`--dry-run` を前段にしても速くならない。機械が空いた状態で、再生成 2 回は 196 秒、`--dry-run` を前段にすると 245 秒だった。
+
+AndroidX の手順も試した。[AndroidX の `update-verification-metadata.sh`](https://github.com/androidx/androidx/blob/androidx-main/development/update-verification-metadata.sh) は `pgp,sha256` の再生成を `--dry-run` で 1 回だけ実行し、`.dryrun` のファイルを本来の名前に移す。`--clean` を空の環境に読み替えて、AGP 9.5.0 の更新で実行した。
+
+| 手順 | metadata の追加行 | 別の空の環境の検証 |
+| --- | --- | --- |
+| `--dry-run` で 1 回、`.dryrun` のファイルを移す | 2 | 失敗（`bc-jdk18on-bom-1.80.2.pom ... from repository Google`） |
+| `--dry-run` なしで 1 回 | 2 | 同じ失敗 |
+
+`--dry-run` の有無で metadata と keyring はバイト単位で一致した。この手順でも lab の 1 回の再生成は足りない。AndroidX で 1 回で足りているのかは確認していない。そのリポジトリの構成が、子と親の repository が分かれる条件に当たるかが違う可能性がある（推測）。
+
+`help` を前段にする案も、空の環境で 1 つずつ順番に測った。
+
+| 更新 | 再生成 2 回 | `help` が前段 | 結果の比較 | `help` が前段の検証 |
+| --- | --- | --- | --- | --- |
+| AGP 9.5.0 | 169、210、165 秒（平均 181 秒） | 174、174、174 秒 | 同一 | 成功 |
+| okhttp の追加 | 212 秒 | 194 秒 | 同一 | 成功 |
+| Compose BOM 2026.08.00 への変更 | 183 秒 | 190 秒 | 同一 | 成功 |
+
+結果の比較は metadata、keyring、全 module の lockfile のバイト単位の比較である。再生成 2 回の差は 2 回目の時間のばらつき（7 秒から 36 秒）で生じていて、平均の差はこの範囲に収まる。`help` を前段にしても意味のある短縮はなく、2 回の起動の案の中で選ぶ理由もない。`help` の利点は時間が安定することで、欠点は 1 回目でビルドの失敗を検出できず、失敗の検出が 2 回目まで遅れることである。okhttp と BOM の時間は 1 回ずつの測定である。
+
+最終的な判定は空の環境の `verify` である。足りなければ失敗する側に倒れる。手順は README の「検証が POM で失敗したとき」に書く。AGP 9.5.0 の更新で手順を実行した結果は次のとおりである。
+
+| 確認 | 結果 |
+| --- | --- |
+| 再生成 1 回 | 追加 2 行。`bc-jdk18on-bom` の行はない |
+| 別の空の環境の検証 | 失敗。`One artifact failed verification: bc-jdk18on-bom-1.80.2.pom ... from repository Google` |
+| Maven Central の POM の sha256 | `5f59cc51...`。Google は `.pom` も `.asc` も 404 |
+| keyring の鍵のブロックで `.asc` を検証 | Gradle が同梱する BouncyCastle で成功。POM を 1 バイト変えると失敗 |
+| 鍵サーバーの鍵で `gpg --verify` | `Good signature`、fingerprint は metadata の `trusted-key` の `7B121B76A7ED6CE6E60AD51784E913A8E3A748C0` と一致。POM を変えると `BAD signature` |
+| 行を足した後の別の空の環境の検証 | 成功 |
+| もう一度再生成を 1 回 | 手で足した行は `origin` と `reason` を含めて残る。整列の位置に移るだけで、内容の差分は 0 行。レビュー用スクリプトも成功 |
+| 行を足した状態の空の環境の検証 | 成功 |
+| AGP 9.3.3 の main に同じ行を足す | 検証は成功。使っていない行があっても失敗しない |
+
+`gpg` で keyring をそのまま使うことはできない。Gradle の keyring は鍵の自己署名を省いているので、`bc-jdk18on-bom` の鍵は `gpg --import` で取り込めない（`no user ID`）。`--allow-non-selfsigned-uid` でも 63 本のうち 46 本しか入らず、この鍵は入らなかった。そこで人の手順は、鍵サーバーの鍵を使い、fingerprint を metadata と照合する形にした。
 
 ### repository の content フィルタでは 1 回にならない
 
@@ -278,11 +447,34 @@ okhttp 4.12.0 を `:app` の `implementation` に足して比べた。検証は�
 
 - metadata の必要な 1 行は `com.squareup` の group を鍵 `DBD744ACE7ADE6AA50DD591F66B50994442D2D40` で信頼する行である。再生成が group の単位にまとめるので、信頼の範囲が `com.squareup` 全体になることを人が確認する
 - lockfile は `okhttp`、`okio`、`okio-jvm` のほか、`kotlin-stdlib-common`、`kotlin-stdlib-jdk7`、`kotlin-stdlib-jdk8` の行が増える
-- 普段の環境の 44 行は不要である。空の環境の結果で検証が通るので、なくても成功する。`guava-parent`、`netty-parent`、`httpcomponents-parent`、`junit-bom` など、今回の依存と関係のない POM のハッシュで、ほかのビルドのキャッシュが混ざったと見られる。検証は通るので、CI では気づけない。これらは最初の利用の信頼（Trust on first use）の行なので、残すとレビューの量と信頼の範囲が増える
+- 普段の環境の 44 行は不要である。空の環境の結果で検証が通るので、なくても成功する。`guava-parent`、`netty-parent`、`httpcomponents-parent`、`junit-bom` など lab の依存のグラフにある POM のハッシュで、部分的なキャッシュの再生成で書かれる（「2 回の再生成が必要な原因」の仕組み 2）。検証は通るので、CI では気づけない。これらは最初の利用の信頼（Trust on first use）の行なので、残すとレビューの量と信頼の範囲が増える
 
-結論として、人の手順にも空の `GRADLE_USER_HOME` と 2 回の実行が必要である。空の環境は不要な行を入れないために必要である。2 回の実行は okhttp では不要だったが、AGP 9.5.0 の更新では必要で、人は事前に見分けられない。2 回目は変更がなければ短い（okhttp で 12 秒）ので、常に 2 回実行する。
+結論として、人の手順も空の `GRADLE_USER_HOME` で 1 回実行する。空の環境は不要な行を避けるために使う。#19228 の欠落は報告の引用で、lab では再現していない。okhttp の追加は 1 回で足りた。AGP 9.5.0 の更新のように足りないときは、`verify` の失敗を見て行を足す。
 
-運用手順は `scripts/regenerate-dependency-metadata.sh` にまとめた。空の `GRADLE_USER_HOME` で 2 回実行し、失敗したら止まり、一時的な環境の Gradle デーモンを止めて消す。AGP 9.5.0 の更新で実行し、別の空の環境の検証の成功と、失敗のときに止まることを確認した。
+運用手順は README の「依存を追加する」の 1 行のコマンドである。
+
+```sh
+GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+```
+
+以前の `scripts/regenerate-dependency-metadata.sh` は削除した。再生成が 1 回になり、CI は呼んでおらず、スクリプトの役割は空の環境の用意と片付けだけになったためである。AGP 9.5.0 の更新でスクリプトを実行し、1 回のビルドで終わることと、足りない行が別の空の環境の検証で検出されることを確認した。
+
+代償として、片付けはなくなった。実行後に `mktemp -d` の一時ディレクトリと、その環境の Gradle デーモンが残る。このコマンドを実行し、metadata、keyring、lockfile の差分がないことと、1.5 GB のディレクトリとデーモン 1 個が残ることを確認した。
+
+### 最小の再現
+
+公開の依存だけで、未改変の Gradle 9.7.1 で再現する。どちらも `gradle/verification-metadata.xml` に鍵サーバーの設定だけを書いた状態から始める。
+
+再現 1（仕組み 1）: `sclab:child:1.0` の POM を HTTP で配信する。POM は `log4j-bom:2.24.3` を import し、`.asc` は置かない。`settings.gradle.kts` に `maven { url = uri("http://127.0.0.1:18791"); isAllowInsecureProtocol = true; content { includeGroup("sclab") } }` と `mavenCentral()` を書き、`implementation("sclab:child:1.0")` の `runtimeClasspath` を解決するタスクで再生成する。
+
+| 実行 | `log4j-bom-2.24.3.pom` の最初の登録 | `.asc` | 書かれた行 | 別の空の環境の検証 |
+| --- | --- | --- | --- | --- |
+| 1 回目 | Maven Central | 成功 | なし | 失敗（`3 artifacts failed verification ... from repository child`） |
+| 2 回目 | `child` | 404 | `reason="Artifact is not signed"` のハッシュ | 成功 |
+
+id の混在は両方の実行で 0 件で、`reason` のないハッシュも 0 件である。1 回目の id はすべて `Default`（25 件）、2 回目はすべて `File`（16 件）だった。ファイルのリポジトリで子を置くと毎回解析されるので、2 回目のハッシュは仕組み 2 の形で書かれる。仕組み 1 だけを確かめるには HTTP で配信する。
+
+再現 2（仕組み 2）: configuration `first` に `com.google.guava:failureaccess:1.0.1`、`second` に `com.google.guava:listenablefuture:1.0` を宣言する。どちらも親は `guava-parent:26.0-android` である。`first` だけを解決するタスクを `--dependency-verification off` で実行し、同じ環境で再生成すると、`guava-parent` に `reason` のないハッシュが書かれる。空の環境の再生成では行は 0 件である。どちらの metadata でも検証は成功する。
 
 ## 検証の対象
 
@@ -388,7 +580,7 @@ off の効果は信頼の範囲ではなく、`verify` の決定性にある。�
 | 鍵の取得の失敗を手で keyring に足す | 手順として採用 | `ignored-key` になったときの選択肢 |
 | 署名のない成果物の値を手で確認する | 部分的に採用 | 確認の対象としてコミット本文に出す。`origin` の書き換えは運用しない |
 | metadata を変更するのは人の確認のため（ロボットの仕事ではない） | 採用 | コミットはワークフローが作るが、承認は人が行う。記事の「変更は稀であるべき」は Dependabot の更新のたびに差分が出るので、検査と分類で補う |
-| `verify-metadata` を `false` にする | 不採用 | 公式が `reduces security` としている。POM は依存の版を変えられるので、グループ単位で鍵を信頼すると、署名された古い版へ差し替えられても検知できない可能性がある（推測、未検証）。実測の削減は 314 行から 286 行で約 9% だけだった。この設定なら再生成は 1 回で strict モードのビルドが通り、2 回の再生成の問題は消えるが、検証を減らす理由にはしない |
+| `verify-metadata` を `false` にする | 不採用 | 公式が `reduces security` としている。実測の削減は 314 行から 286 行で約 9% だけだった。この設定なら再生成は 1 回で strict モードのビルドが通り、2 回の再生成の問題は消えるが、検証を減らす理由にはしない。POM の差し替えの攻撃を下の表のとおり確かめた |
 | 鍵の `version` を消して全ての版を信頼する | 不採用 | 記事自身が最も危険な判断としている。metadata の信頼 79 件のうち 23 件は版を限定している。Gradle が生成した範囲のまま残し、次の版で再度確認する |
 | 手で component を `trusted-key` に移す、ハッシュを消す | 不採用 | 手の編集はワークフローの再生成と競合し、差分が読みにくくなる |
 | metadata に注釈する | XML のコメントは不採用、`reason` 属性は採用 | 再生成でコメントは消える（手元で確認）。`reason` は再生成で残るので、手で足した設定に使う（「手で足した設定の reason」） |
@@ -476,6 +668,20 @@ XML のコメントは再生成で消えるので、Gradle の `reason` 属性�
 | `<trusting>` に個別に `reason` を書いて再生成（Gradle 9.7.1） | 残った |
 
 `gradle:gradle`、`*-sources.jar`、`*-javadoc.jar`、Groovy の鍵に、短い理由とこの ADR への参照を書いた。Dependabot の PR の再生成でも残る見込みだが、実際の PR では確認していない。
+
+## POM の差し替えの確認
+
+`verify-metadata` を `false` にしたときに、POM の差し替えで署名された古いバージョンを使わせられるかを確かめた。Maven Central の proxy を手元に立て、`okhttp` 4.12.0 の POM だけを改ざんして `okio` を 3.6.0 から 3.3.0 に下げた。`okio` 3.3.0 の jar は本物で、同じ鍵で署名されている。信頼する鍵は `com.squareup` の group である。
+
+| 設定 | 対象 | 改ざんの後の結果 |
+| --- | --- | --- |
+| `verify-metadata` が `true`、lock あり | compile と runtime | `okhttp-4.12.0.pom` の検証で失敗 |
+| `verify-metadata` が `true` | plugin の classpath | 同じ失敗 |
+| `verify-metadata` が `false`、lock あり | compile と runtime | 成功。`okio` は 3.6.0 のまま |
+| `verify-metadata` が `false`、lock なし | compile と runtime | 成功。`okio` が 3.3.0 に下がる |
+| `verify-metadata` が `false`、lock なし | plugin の classpath | 成功。`okio` が 3.3.0 に下がる |
+
+`gradle.lockfile` は compile と runtime の攻撃を止めたが、ADR-0003 のとおり plugin の classpath には lock がない。`verify-metadata` が `true` なら両方が止まる。これが metadata の検証を残す理由である。改ざんした POM が新しい依存を足す場合と、lock のないほかの configuration は試していない。
 
 ## 実際の PR での確認
 
@@ -588,7 +794,7 @@ Dependabot の PR の確認:
 4. Kotlin の互換性の表で版の範囲を確認する
 5. wrapper の更新があれば、`gradlew` と `gradlew.bat` の diff を確認する。Gradle の更新の PR は、merge の前に Android Studio で sync する。Gradle の更新で鍵や Groovy の取得元が変わると、CI は成功して sync だけが失敗するためである
 6. `Rejected` で `Commit` が失敗したときは merge しない。原因を調べるまで再生成しない
-7. `verify` が `.pom` で失敗したら、「2 回の再生成が必要な原因」の手順で確認する
+7. `verify` が `.pom` で失敗したら、README の「検証が POM で失敗したとき」の手順で行を足す
 8. 再生成のコミットがある PR では、Approve workflows to run を押して `pull_request` の `verify` を実行する。手動で起動した `verify` は必須チェックを満たさない
 9. `verify` の成功と `mergeStateStatus` の `CLEAN` を確認して merge する
 
@@ -599,7 +805,7 @@ Dependabot の PR の確認:
 手元で metadata を変更するとき（依存を手で追加したときなど）:
 
 ```sh
-./scripts/regenerate-dependency-metadata.sh
+GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
 ```
 
 `ignored-key` が出たら、鍵の取得の一時的な失敗か確認する。残すと該当の成果物はハッシュで検証される。鍵を入れるなら再生成をやり直すか、手元で再生成する。`verify` が `Key servers are disabled` で失敗したら、keyring に鍵が入っていないので同じように直す。
@@ -632,7 +838,8 @@ rss-reader は読むだけで、まだ適用していない。
 ## Consequences
 
 - 依存の更新で、人が見る差分が新しい鍵と無署名の成果物に絞られる
-- Dependabot の PR ごとに `Regenerate` が再生成を 2 回実行する。2 回目はタスクが最新なので短い
+- バージョンが変わる更新では PR の `verify` が失敗し、人が署名を確かめて行を足す作業が入ることがある
+- 手で足した行は `origin="Added by hand"` で区別する。使わなくなった行は Gradle が消さないので、components を作り直すときに一緒に消える
 - CI の `verify` の成功は metadata の一貫性だけを示す。承認の根拠にしない
 - 再生成のコミットがある PR は、人が Approve workflows to run を押すまで merge できない
 - Gradle の更新の PR は、merge の前に人が Android Studio で sync する必要がある
@@ -647,9 +854,9 @@ rss-reader は読むだけで、まだ適用していない。
 
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない
+- 1 回の実行の運用は、実際の Dependabot の PR で試していない。行を足す PR の merge の後の `@dependabot rebase` が動くかは未確認で、以前の PR #13 では 2 回目の依頼に反応がなかった
 - `gradle-*-src.zip` が取得される条件は特定できていない
 - `[dependabot skip]` のあるコミットでの `@dependabot rebase` の結果は確認できていない。main を進めた後のコメントに Dependabot が反応しなかった
 - ruleset の下で再生成のコミットを実際に merge してはいない。`mergeStateStatus` の `CLEAN` までの確認である
 - `pull_request` の承認待ちの実行を REST API で承認できるかは確認していない。GitHub App の token に変えて承認を避けるかは判断していない
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める
-- `.module` のある BOM が lab の実物では 2 回で揃い、最小の再現では揃わない理由は確認していない

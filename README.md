@@ -118,11 +118,11 @@ Dependabot の PR では、PR を確認する人が次の順番で作業する�
 
 1. main から別のブランチを作り、上の手順で確かめた行だけを足す。再生成は実行しない。この行はまだ使われないが、`verify` は成功する
 2. PR を作り、`verify` の成功の後に merge する
-3. Dependabot の PR に `@dependabot rebase` をコメントする
-4. `Regenerate verification metadata` と `Commit verification metadata` の結果を確かめ、再生成のコミットがあれば Approve workflows to run を押す
-5. PR の `verify` の成功を確かめて merge する
+3. Dependabot の PR に `@dependabot recreate` をコメントする。再生成のコミットがある PR では `@dependabot rebase` は反応しなかった
+4. `Regenerate verification metadata` と `Commit verification metadata` の結果を確かめ、再生成のコミットがあれば Approve workflows to run を押す。`CI` と `Regenerate verification metadata` の両方の run の承認が必要である。`verify` だけを動かすと、`mergeStateStatus` は `UNSTABLE` のままになる
+5. PR の `verify` の成功と `mergeStateStatus` の `CLEAN` を確かめて merge する
 
-この順番は実際の Dependabot の PR では試していない。手元で確かめたのは、使われない行があっても `verify` が成功すること、行が再生成で残ること、行を足すと `verify` が成功することである。手順 3 の `@dependabot rebase` が動くかは未確認で、反応がないときの代わりの手順も決まっていない。
+この順番は [PR #13](https://github.com/appachan/android-supply-chain-lab/pull/13) で手順 5 の merge の前まで確かめた。結果は [ADR-0002](docs/adr/0002-dependency-verification.md) の「古い PR の扱い」にある。
 
 ## Gradle を更新する
 

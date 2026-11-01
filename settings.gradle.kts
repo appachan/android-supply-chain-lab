@@ -16,6 +16,8 @@ buildscript {
     configurations.all { resolutionStrategy.failOnNonReproducibleResolution() }
 }
 dependencyResolutionManagement {
+    // 再生成のジョブは token を持たないので、取得済みのディレクトリを指定する
+    val libRepositoryDirectory = providers.gradleProperty("libRepositoryDirectory")
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google {
@@ -26,6 +28,24 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        // Dependabot が読むので URL はリテラルで書く。docs/adr/0002-dependency-verification.md を参照
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/appachan/android-supply-chain-lab-lib")
+                    if (libRepositoryDirectory.isPresent) {
+                        setUrl(libRepositoryDirectory.get())
+                    } else {
+                        credentials {
+                            username = providers.environmentVariable("GITHUB_ACTOR").orNull
+                            password = providers.environmentVariable("GITHUB_TOKEN").orNull
+                        }
+                    }
+                }
+            }
+            filter { includeModule("com.github.appachan", "android-supply-chain-lab-lib") }
+        }
     }
 }
 

@@ -12,6 +12,9 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -27,4 +30,6 @@ jobs:
 
       # Gradle User Home をキャッシュしない。理由は docs/adr/0001-gradle-wrapper-verification.md を参照
       - name: Build and unit tests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./gradlew build

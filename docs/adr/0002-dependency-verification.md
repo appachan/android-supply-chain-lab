@@ -323,7 +323,7 @@ BOM の行を手で足す方法も確かめた。AGP 9.5.0 の更新の前に me
 
 手で足す方法は、バージョンが変わる更新では足りない。
 
-configuration cache は関係しない。どちらの実行も `Calculating task graph as configuration cache cannot be reused due to --write-verification-metadata` を出した。スクリプトの 2 回と `--no-configuration-cache` の 2 回で、metadata と lockfile は一致した。
+configuration cache は関係しない。どちらの実行も `Calculating task graph as configuration cache cannot be reused due to --write-verification-metadata` を出した。当時のスクリプトの 2 回と `--no-configuration-cache` の 2 回で、metadata と lockfile は一致した。
 
 ### 公式の issue との関係
 
@@ -451,7 +451,15 @@ okhttp 4.12.0 を `:app` の `implementation` に足して比べた。検証は�
 
 結論として、人の手順も空の `GRADLE_USER_HOME` で 1 回実行する。空の環境は不要な行を避けるために使う。#19228 の欠落は報告の引用で、lab では再現していない。okhttp の追加は 1 回で足りた。AGP 9.5.0 の更新のように足りないときは、`verify` の失敗を見て行を足す。
 
-運用手順は `scripts/regenerate-dependency-metadata.sh` にまとめた。空の `GRADLE_USER_HOME` で 1 回実行し、失敗したら止まり、一時的な環境の Gradle デーモンを止めて消す。AGP 9.5.0 の更新で実行し、1 回のビルドで終わること、足りない行が別の空の環境の検証で検出されること、一時ディレクトリが残らないことを確認した。
+運用手順は README の「依存を追加する」の 1 行のコマンドである。
+
+```sh
+GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+```
+
+以前の `scripts/regenerate-dependency-metadata.sh` は削除した。再生成が 1 回になり、CI は呼んでおらず、スクリプトの役割は空の環境の用意と片付けだけになったためである。AGP 9.5.0 の更新でスクリプトを実行し、1 回のビルドで終わることと、足りない行が別の空の環境の検証で検出されることを確認した。
+
+代償として、片付けはなくなった。実行後に `mktemp -d` の一時ディレクトリと、その環境の Gradle デーモンが残る。このコマンドを実行し、metadata、keyring、lockfile の差分がないことと、1.5 GB のディレクトリとデーモン 1 個が残ることを確認した。
 
 ### 最小の再現
 
@@ -797,7 +805,7 @@ Dependabot の PR の確認:
 手元で metadata を変更するとき（依存を手で追加したときなど）:
 
 ```sh
-./scripts/regenerate-dependency-metadata.sh
+GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
 ```
 
 `ignored-key` が出たら、鍵の取得の一時的な失敗か確認する。残すと該当の成果物はハッシュで検証される。鍵を入れるなら再生成をやり直すか、手元で再生成する。`verify` が `Key servers are disabled` で失敗したら、keyring に鍵が入っていないので同じように直す。

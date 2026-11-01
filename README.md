@@ -53,11 +53,13 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 
 1. 依存を `gradle/libs.versions.toml` と build script に足す
 2. Android Studio の sync が検証で止まる。`This can indicate that a dependency has been compromised` の定型の文言は、未登録の依存でも出る
-3. 再生成のスクリプトを実行する
+3. 空の `GRADLE_USER_HOME` で再生成する
 
    ```sh
-   ./scripts/regenerate-dependency-metadata.sh
+   GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
    ```
+
+   空の環境を使うのは、キャッシュがあると不要な行が入るためである。実測で、`build` の後のキャッシュでは 24 行、普段の `GRADLE_USER_HOME` では 44 行増えた。[gradle/gradle#19228](https://github.com/gradle/gradle/issues/19228) には、キャッシュがあると親や BOM の行が書かれないという報告もある（lab では未再現）。親や BOM の POM の行が足りないときは、`verify` が対象のファイルを示して失敗する。「検証が POM で失敗したとき」の手順で行を足す
 
 4. Android Studio の sync が通ることを確かめる
 5. 差分で、増えた鍵と group の範囲を確かめる。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
@@ -71,7 +73,7 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc-jdk18on-bom:1.80.2) from repository Google
 ```
 
-次の手順で行を足す。例は `bc-jdk18on-bom` である。
+次の手順で行を足す。例は `bc-jdk18on-bom` である。手順 2 には `gpg` が必要である。開発機に入っていないことがあるので、なければ先に入れる。
 
 1. 配布元の POM と `.asc` を取得し、`from repository` の repository に `.asc` がないことを確かめる
 
@@ -82,7 +84,7 @@ One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc
    curl -s -o /dev/null -w '%{http_code}\n' https://dl.google.com/dl/android/maven2/org/bouncycastle/bc-jdk18on-bom/1.80.2/bc-jdk18on-bom-1.80.2.pom.asc
    ```
 
-2. 署名を確かめる。`gradle/verification-keyring.keys` は鍵の自己署名を省いていて `gpg` に取り込めない鍵があるので、鍵サーバーの鍵を使う。表示された fingerprint が `gradle/verification-metadata.xml` の `trusted-key` にあり、その group が対象と合うことを確かめる
+2. 署名を確かめる。`gradle/verification-keyring.keys` は Gradle の検証用で、`gpg` の取り込みを想定していないので、鍵サーバーの鍵を使う。表示された fingerprint が `gradle/verification-metadata.xml` の `trusted-key` にあり、その group が対象と合うことを確かめる
 
    ```sh
    export GNUPGHOME="$(mktemp -d)"

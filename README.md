@@ -127,3 +127,5 @@ Dependabot の PR では、PR を確認する人が次の順番で作業する�
 ## Gradle を更新する
 
 Gradle の更新の PR は、merge の前に Android Studio で sync する。Gradle の更新で鍵や取得するソースが変わると、CI は成功して sync だけが失敗することがある。
+
+<!-- temporary probe, not for merge -->

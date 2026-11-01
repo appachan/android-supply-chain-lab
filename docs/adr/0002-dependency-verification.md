@@ -25,6 +25,7 @@ Gradle の依存検証（`gradle/verification-metadata.xml`）は、ビルドが
 - Gradle の `cooldown` は `default-days: 7` で、`androidx.*` を対象外にする（「cooldown と Google Maven のライブラリ」）
 - 検査では、再生成では起こらない変更（検証設定の変更、既存の値の変更、信頼する鍵の署名の検証失敗）を機械的に拒否する。残りの差分をコミット本文に分類して出し、人が確認する
 - CI の成功は metadata の承認として扱わない。人が差分を確認して merge する。auto-merge は使わない
+- 自作のライブラリ `com.github.appachan:android-supply-chain-lab-lib` は、鍵の信頼と `sha256` を併用する。`sha256` はスクリプトで追記し、`.aar` の値は人が配布元の job summary と照合する（「GitHub Packages のライブラリ」）
 
 ## 論点ごとの結論
 
@@ -801,13 +802,75 @@ rss-reader の設定を読み取りで確認した。public で、`fork-pr-contr
 
 ADR-0003 の方式を main に merge した後の PR で、再生成のコミットの `verified` は [PR #6](https://github.com/appachan/android-supply-chain-lab/pull/6)、[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7)、[PR #8](https://github.com/appachan/android-supply-chain-lab/pull/8)、[PR #9](https://github.com/appachan/android-supply-chain-lab/pull/9) のすべてで `true` だった。[PR #7](https://github.com/appachan/android-supply-chain-lab/pull/7) は 3 つの lockfile を含む。結果の一覧は ADR-0003 の論点 9 にある。
 
+## GitHub Packages のライブラリ
+
+判断の根拠は [android-supply-chain-lab-lib の ADR-0001](https://github.com/appachan/android-supply-chain-lab-lib/blob/main/docs/adr/0001-private-library-distribution.md) に書いた。ここには lab の実装と運用を書く。
+
+### 実装
+
+- `settings.gradle.kts` の `exclusiveContent` と `includeModule` で、この module の取得先を GitHub Packages だけにする。URL はリテラルで書く。Dependabot の `RepositoriesFinder` がリテラルを読むからである。再生成のジョブでは `-PlibRepositoryDirectory` で `setUrl` して取得済みのディレクトリを読む
+- 鍵は `trusted-key` をバージョン付きで持ち、`.aar` と `.module` の `sha256` も持つ。鍵だけでは、同じ鍵の署名を保った差し替えを検知できない。再生成は新しいバージョンの `sha256` を書かないので、`.github/scripts/pin_library_hashes.py` で足す
+- 読み取りは Actions の `GITHUB_TOKEN` の `packages: read` で行う。`Regenerate verification metadata` は、取得の `fetch-library` ジョブと `regenerate` ジョブを分け、`regenerate` ジョブには `packages: read` を与えない。同じジョブの step を分けるだけでは、依存のコードがメモリから token を読める
+- `regenerate` ジョブは再生成の後に同じ環境で `build` を実行する。再生成は既存のハッシュとの不一致で止まらないので、ここで止める
+- `pin_library_hashes.py` は `Commit verification metadata` で実行する。このワークフローは main の定義で動くので、期待する fingerprint の `LIBRARY_SIGNING_KEYS` を PR で変更できない。失敗すると後続の step が実行されず、コミットされない
+
+### 確認の結果
+
+一時ブランチの workflow で、実際の lab の構成と空の環境で確かめた。実物の `0.3.0` を `-PlibRepositoryDirectory` のディレクトリに取得し、差し替えはそのディレクトリで行った。GitHub Packages の `0.3.0` は変更していない。「同じ鍵の差し替え」の AAR は、中身が `0.3.0` と異なり、`0.3.0` の鍵の有効な署名を持つ `f60cad98...` である。
+
+| シナリオ | 結果 | 実行 |
+| --- | --- | --- |
+| 実物の `0.3.0` | 成功 | [run 41268379086](https://github.com/appachan/android-supply-chain-lab/actions/runs/41268379086) |
+| 同じ鍵の差し替え | 失敗。`One artifact failed verification` | 同上 |
+| 同じ鍵の差し替え、`sha256` を消した metadata | 成功。鍵の信頼だけでは検知できない | 同上 |
+| AAR に 1 byte 追加 | 失敗 | 同上 |
+| 攻撃者の鍵の署名 | 失敗 | 同上 |
+| 同じ鍵の差し替えで再生成 | 再生成は成功。同じ環境の `build` で失敗 | 同上 |
+| token なしで GitHub Packages から解決 | 失敗。`Username must not be null!` | 同上 |
+| `0.4.0` への更新 | 再生成と `build` は成功。スクリプトが 1 件を追記 | 同上 |
+| `0.4.0` の AAR に 1 byte 追加 | 再生成と `build` は成功。スクリプトが `signature verification failed` で拒否 | 同上 |
+| `0.4.0` の `.asc` を消す | 再生成と `build` は成功。スクリプトが `is not covered by the expected keys` で拒否 | 同上 |
+| 追記の後に空の環境で再生成 | 差分なし | [run 41268805259](https://github.com/appachan/android-supply-chain-lab/actions/runs/41268805259) |
+
+スクリプトが拒否した 2 つの場合、再生成が書いたハッシュが metadata に残っていて、`build` は成功している。スクリプトの失敗で後続を止めるのはこのためである。
+
+`0.3.0` の最初の metadata は `fetch-library`、`regenerate`、スクリプトの順で生成した（[run 41267455651](https://github.com/appachan/android-supply-chain-lab/actions/runs/41267455651)）。追加は 9 行で、`bc-jdk18on-bom` の行と既存の `reason` は変わっていない。AAR の値はライブラリの job summary の `fc6f0cfd...`、`.module` の値は `3c5e59b3...` と一致した。
+
+ライブラリの更新の PR では `Commit verification metadata` のコミットの本文に `.aar` の `sha256` の先頭 16 文字が出る。この値を配布元の `Publish` の job summary と照合する。スクリプトは、公開から記録までの間の同じ鍵の差し替えと、`regenerate` ジョブの依存のコードによる metadata の書き換えを防げない。
+
+```sh
+gh attestation verify android-supply-chain-lab-lib-<version>.aar \
+  --repo appachan/android-supply-chain-lab-lib \
+  --signer-workflow appachan/android-supply-chain-lab-lib/.github/workflows/publish.yml \
+  --source-ref refs/tags/v<version>
+```
+
+`--source-ref` を省くと、同じ中身の別のバージョンでも成功する。このライブラリの AAR は `0.1.0` から同じ中身である。
+
+### 手順
+
+配布元の鍵が変わるとき:
+
+1. 配布元の README の fingerprint と `docs/signing/release-key.pub.asc` を確認する
+2. 公開鍵を `gradle/verification-keyring.keys` に足し、fingerprint を `Commit verification metadata` の `LIBRARY_SIGNING_KEYS` に空白区切りで足す。この変更を main に merge する。main の定義で動くので、更新の PR より先に必要である
+3. 新しいバージョンの更新の PR を通常どおり確認する
+
+バージョンを手で変えるとき、再生成は token を持つ環境で実行し、取得した成果物のディレクトリを `pin_library_hashes.py` に渡す。ディレクトリの構造は `fetch-library` ジョブと同じである。署名の検証の結果を読むので、再生成の後に実行する。
+
+### 影響
+
+- 手元のビルドと Android Studio の sync には `read:packages` の token が要る。`repo` スコープは代わりにならない
+- 第三者は token なしではビルドできない
+- fork の PR の `verify` は、`GITHUB_TOKEN` で GitHub Packages を読めなければ依存の解決で失敗する。必須チェックなので merge できない。fork の PR の `GITHUB_TOKEN` で読めるかは確認していない
+- `Username must not be null!` は、token がないときの失敗である。依存の改ざんとは関係ない
+
 ## 運用手順
 
 Dependabot の PR の確認:
 
 1. `Commit verification metadata` のコミットの本文を読む。commit がなければ、依存の成果物の変更がなく、CI はそのまま判断できる
 2. 新しい鍵の fingerprint と範囲を配布元の公式情報で確認する
-3. ハッシュで受け入れる成果物を確認する。特に signature の警告が付いた行を確認する
+3. ハッシュで受け入れる成果物を確認する。特に signature の警告が付いた行を確認する。`android-supply-chain-lab-lib` の更新では `.aar` の値を配布元の job summary と照合する。この行の signature の警告は、署名が残っていても付く
 4. Kotlin の互換性の表で版の範囲を確認する
 5. wrapper の更新があれば、`gradlew` と `gradlew.bat` の diff を確認する。Gradle の更新の PR は、merge の前に Android Studio で sync する。Gradle の更新で鍵や Groovy の取得元が変わると、CI は成功して sync だけが失敗するためである
 6. `Rejected` で `Commit` が失敗したときは merge しない。原因を調べるまで再生成しない
@@ -815,7 +878,7 @@ Dependabot の PR の確認:
 8. 再生成のコミットがある PR では、Approve workflows to run を押して `pull_request` の `CI` と `Regenerate verification metadata` を実行する。手動で起動した `verify` は必須チェックを満たさない。`Regenerate verification metadata` が未承認だと `mergeStateStatus` は `UNSTABLE` のままになる
 9. `verify` の成功と `mergeStateStatus` の `CLEAN` を確認して merge する
 
-`Regenerate` が失敗したときは、更新そのものがビルドできないので人が判断する。
+`Regenerate` が失敗したときは、更新そのものがビルドできないので人が判断する。`android-supply-chain-lab-lib` の差し替えも `regenerate` ジョブの `Verify in the same environment` で失敗する。`Commit` の `Pin the library hashes` が失敗したときは merge しない。
 
 `Commit verification metadata` が `Branch not found` で失敗したときは、Dependabot が PR を置き換えてブランチを消した後の実行なので、対応は要らない。
 
@@ -824,6 +887,8 @@ Dependabot の PR の確認:
 ```sh
 GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
 ```
+
+`GITHUB_ACTOR` と `GITHUB_TOKEN` が要る（「GitHub Packages のライブラリ」）。
 
 `ignored-key` が出たら、鍵の取得の一時的な失敗か確認する。残すと該当の成果物はハッシュで検証される。鍵を入れるなら再生成をやり直すか、手元で再生成する。`verify` が `Key servers are disabled` で失敗したら、keyring に鍵が入っていないので同じように直す。
 
@@ -866,9 +931,15 @@ rss-reader は読むだけで、まだ適用していない。
 - `androidx.*` は cooldown の対象外なので、公開直後のバージョンも提案される
 - `androidx.*` に当たらない Google Maven のライブラリは、最新が pre-release だと Dependabot が更新しない
 - `verify` は鍵サーバーに依存しない。keyring の欠けは `verify` の失敗になる
+- 手元のビルドと sync には `read:packages` の token が要る。token のない第三者はビルドできない
+- `android-supply-chain-lab-lib` の鍵を交換するときは、更新の PR より先に keyring と `LIBRARY_SIGNING_KEYS` を main に入れる
+- Dependabot の PR の `verify` の前に、main の `Commit verification metadata` が `library-repository` の artifact を要求する。この変更より前に作られた `Regenerate` の実行の結果は使えない
 
 ## 未解決
 
+- Dependabot が GitHub Packages の `android-supply-chain-lab-lib` の更新を提案できるか。`dependabot.yml` の `registries` は設定していない
+- Dependabot の PR の `GITHUB_TOKEN` で `fetch-library` ジョブが読めるか。確認は `push` の実行である
+- fork の PR の `GITHUB_TOKEN` で GitHub Packages を読めるか
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない
 - 1 回の実行の運用を確かめたのは PR #13 の 1 件だけである。バージョンが変わる更新で行が足りなくなる頻度は分からない

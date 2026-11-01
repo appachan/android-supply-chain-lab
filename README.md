@@ -11,7 +11,7 @@ Android アプリのサプライチェーンリスクに対する理想の運用
 3. version catalog の指定と推移的依存のバージョンのズレの検知と固定
 4. private ライブラリを GitHub Packages の Maven で配信するときの完全性の検証と provenance
 
-テーマ 1 の判断と検証結果は [ADR-0001](docs/adr/0001-gradle-wrapper-verification.md)、テーマ 2 は [ADR-0002](docs/adr/0002-dependency-verification.md)、テーマ 3 は [ADR-0003](docs/adr/0003-version-resolution.md) にまとめている。
+テーマ 1 の判断と検証結果は [ADR-0001](docs/adr/0001-gradle-wrapper-verification.md)、テーマ 2 は [ADR-0002](docs/adr/0002-dependency-verification.md)、テーマ 3 は [ADR-0003](docs/adr/0003-version-resolution.md)、テーマ 4 は [android-supply-chain-lab-lib の ADR-0001](https://github.com/appachan/android-supply-chain-lab-lib/blob/main/docs/adr/0001-private-library-distribution.md) にまとめている。
 
 ## 構成
 
@@ -43,9 +43,15 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
 
 ## ビルド
 
+`:shared:ui` は GitHub Packages の `com.github.appachan:android-supply-chain-lab-lib` に依存する。public のパッケージでも匿名では読めないので、`read:packages` のある token を環境変数で渡す。Android Studio の sync にも同じ環境変数が要る。
+
 ```sh
+export GITHUB_ACTOR=<GitHub のユーザー名>
+export GITHUB_TOKEN=<read:packages のある token>
 ./gradlew build
 ```
+
+token がないと `Username must not be null!` で失敗する。Actions の CI は `GITHUB_TOKEN` で読むので、シークレットは要らない。fork の PR の扱いは ADR-0002 の「GitHub Packages のライブラリ」に書く。
 
 各 module の `gradle.lockfile` と異なるバージョンが解決されるとビルドが失敗する。依存を変えたときは、次の手順で `gradle/verification-metadata.xml` と `gradle.lockfile` を一緒に更新する。詳細は [ADR-0002](docs/adr/0002-dependency-verification.md) と [ADR-0003](docs/adr/0003-version-resolution.md) を参照。
 
@@ -62,7 +68,7 @@ compileSdk は Compose BOM 2026.09.00 の要求で 37 にしている。
    空の環境を使うのは、キャッシュがあると不要な行が入るためである。実測で、`build` の後のキャッシュでは 24 行、普段の `GRADLE_USER_HOME` では 44 行増えた。[gradle/gradle#19228](https://github.com/gradle/gradle/issues/19228) には、キャッシュがあると親や BOM の行が書かれないという報告もある（lab では未再現）。親や BOM の POM の行が足りないときは、`verify` が対象のファイルを示して失敗する。「検証が POM で失敗したとき」の手順で行を足す
 
 4. Android Studio の sync が通ることを確かめる
-5. 差分で、増えた鍵と group の範囲を確かめる。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
+5. 差分で、増えた鍵と group の範囲を確かめる。`com.github.appachan:android-supply-chain-lab-lib` のバージョンを手で変えたときは、ADR-0002 の「GitHub Packages のライブラリ」の手順で `sha256` も足す。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
 6. PR を出す
 
 ## 検証が POM で失敗したとき

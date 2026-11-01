@@ -13,6 +13,7 @@ androidxActivity = "1.13.0"
 androidxComposeBom = "2026.09.00"
 androidxTestRunner = "1.7.0"
 junit4 = "4.13.2"
+supplyChainLabLib = "0.3.0"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
@@ -28,6 +29,9 @@ androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-
 # Testing
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 junit4 = { module = "junit:junit", version.ref = "junit4" }
+
+# Library published to GitHub Packages
+supply-chain-lab-lib = { module = "com.github.appachan:android-supply-chain-lab-lib", version.ref = "supplyChainLabLib" }
 
 # Gradle plugins (for build-logic)
 android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "androidGradlePlugin" }

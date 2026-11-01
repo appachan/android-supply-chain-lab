@@ -7,11 +7,45 @@ permissions:
   contents: read
 
 jobs:
-  regenerate:
+  # 取得と再生成のジョブを分ける。同じジョブの step の分離では、依存のコードから token を読める
+  fetch-library:
     if: >-
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.head_ref, 'dependabot/gradle/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      # PR のコードは実行しない。catalog のバージョンは形式を検査してから URL に使う
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Fetch the library
+        shell: bash
+        run: |
+          version="$(sed -n 's/^supplyChainLabLib = "\(.*\)"$/\1/p' gradle/libs.versions.toml)"
+          [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]
+          path="com/github/appachan/android-supply-chain-lab-lib/$version"
+          mkdir -p "$RUNNER_TEMP/library-repository/$path"
+          for file in "android-supply-chain-lab-lib-$version".{aar,module,pom}{,.asc}; do
+            curl -fsSL -u "$GITHUB_ACTOR:$GITHUB_TOKEN" -o "$RUNNER_TEMP/library-repository/$path/$file" \
+              "https://maven.pkg.github.com/appachan/android-supply-chain-lab-lib/$path/$file"
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: library-repository
+          path: ${{ runner.temp }}/library-repository
+          if-no-files-found: error
+
+  regenerate:
+    needs: fetch-library
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,8 +65,19 @@ jobs:
       # 検証なしで新しい依存のコードを実行するので、このジョブには書き込み権限を渡さない
       # 親や BOM の POM の行は 1 回の実行で足りないことがある。そのときは verify が失敗するので人が行を足す
       # 理由は docs/adr/0002-dependency-verification.md を参照
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: library-repository
+          path: ${{ runner.temp }}/library-repository
+
       - name: Regenerate
-        run: ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+        run: >-
+          ./gradlew -PlibRepositoryDirectory="file://$RUNNER_TEMP/library-repository"
+          --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+
+      # 再生成は既存のハッシュとの不一致で止まらない。不一致はここで止める
+      - name: Verify in the same environment
+        run: ./gradlew -PlibRepositoryDirectory="file://$RUNNER_TEMP/library-repository" build
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -22,9 +22,9 @@ Gradle wrapper には、ビルドの最初に実行されるものが 2 つあ�
 - `gradle-wrapper.properties` に `distributionSha256Sum` を設定し、配布物を検証する
 - CI の最初に Gradle 公式の [wrapper validation Action](https://github.com/gradle/actions/blob/v6.4.1/docs/wrapper-validation.md) を実行し、`gradle-wrapper.jar` を検証する
 
-CI では Gradle User Home をキャッシュしない。`distributionSha256Sum` はダウンロードのときにしか検証されないので、配布物がキャッシュから復元されると検証が実行されないからである。このため `gradle/actions/setup-gradle` は使わない。`setup-gradle` の basic provider は `~/.gradle/wrapper` を保存すると[ドキュメント](https://github.com/gradle/actions/blob/v6.4.1/docs/setup-gradle.md#what-basic-caching-stores)に書かれている。既定の enhanced provider の扱いは確認していない。キャッシュなしの CI は毎回の依存のダウンロードで遅くなるが、このリポジトリの規模では許容する。
+CI の `verify` ジョブでは、`gradle/actions/setup-gradle` の `cache-provider: basic` で Gradle User Home をキャッシュする。`distributionSha256Sum` はダウンロードのときにしか検証されないので、配布物がキャッシュから復元されると検証が実行されない。この事実は変わらない。それでも、default branch で検証されたものを使うという前提で許容する。一般のプロジェクトはキャッシュを使うので、キャッシュなしでしか成り立たないプラクティスでは意味がないからである。詳細は「CI のキャッシュ」に書く。
 
-`setup-gradle` は既定で wrapper validation を実行する（`validate-wrappers`）ので、`setup-gradle` を使うプロジェクトで wrapper validation の Action を別に実行すると検証が重複する。
+再生成のジョブには `setup-gradle` を入れない。再生成には空の環境が要る（[ADR-0002](0002-dependency-verification.md)）。
 
 ## 何を守り、何を守らないか
 
@@ -33,7 +33,7 @@ CI では Gradle User Home をキャッシュしない。`distributionSha256Sum`
 | 検証対象 | ダウンロードした Gradle の配布物 | リポジトリ内の `gradle-wrapper.jar` |
 | 比較先 | `gradle-wrapper.properties` の値 | Gradle の公式リリースの checksum の一覧 |
 | 検証する場所 | `gradlew` を実行した環境 | CI |
-| 検証するタイミング | 配布物が未ダウンロードのときだけ | CI の実行ごと |
+| 検証するタイミング | 配布物が未ダウンロードのときだけ。キャッシュから復元された実行では検証しない | CI の実行ごと |
 
 `distributionSha256Sum` が守るもの:
 
@@ -138,11 +138,113 @@ GitHub Actions では、一時ブランチに確認用の変更を push して�
   da9f6ba5070e87b7abe25b56e5f6d004883a5399cefb8cc6512e2f53fe10b8c3 gradle/wrapper/gradle-wrapper.jar
 ```
 
-main の CI のログでは、ビルドの step が毎回 `gradle-9.7.1-bin.zip` をダウンロードしていて、`distributionSha256Sum` の検証が実行される状態になっている。ただし、値を壊したときの失敗を確認したのはローカルだけで、CI では確認していない。
+キャッシュを入れる前の main の CI のログでは、ビルドの step が毎回 `gradle-9.7.1-bin.zip` をダウンロードしていて、`distributionSha256Sum` の検証が実行される状態だった。ただし、値を壊したときの失敗を確認したのはローカルだけで、CI では確認していない。
+
+## CI のキャッシュ
+
+以前の判断はキャッシュなしだった。配布物の検証が飛ぶことを理由に `setup-gradle` を使わないとしていた。判断を変えた理由は 2 つある。
+
+- `~/.gradle/wrapper` を含むキャッシュは、default branch で検証されたものを使うという前提に立てば許容できる
+- 一般のプロジェクトはキャッシュを使う。キャッシュありで成り立たないプラクティスは、他のプロジェクトに当てはめられない
+
+### 前提の条件
+
+[`cache-read-only`](https://github.com/gradle/actions/blob/v6.4.1/setup-gradle/action.yml) の既定は default branch 以外で `true` である。`pull_request` の cache の scope は merge ref なので、PR が `ci.yml` を書き換えて書き込みを有効にしても、default branch の entry にはならない。
+
+「検証された」には次の限定が付く。
+
+- default branch の実行は、ビルドが失敗しても保存される。[実装](https://github.com/gradle/actions/blob/v6.4.1/sources/src/setup-gradle.ts)の post step は結果を見ずに `save` を呼び、basic は `buildResults` を使わない。依存は次の実行で検証されるので問題にならない。配布物は `distributionSha256Sum` の失敗では残らない
+- キャッシュには `caches/build-cache-1` や `caches/<version>/kotlin-dsl` も入る。これらは依存検証の対象外で、前提に依存する。入力が同じタスクはキャッシュから復元され、再実行されない
+- default branch の scope には、Gradle を実行しない `Commit verification metadata`（`workflow_run`）も含まれる。このジョブは artifact を実行しないので、キャッシュには書かない
+
+### キャッシュありの `verify` は POM の行の不足を見逃すか
+
+見逃さなかった。AGP 9.5.0 の更新を空の環境で 1 回再生成し（`bc-jdk18on-bom` の行はない）、その結果を環境を変えて `./gradlew build` で判定した。環境は CI に合わせ、パスを固定し、更新時刻を保ち、basic が保存する `caches` と `wrapper` だけを復元した。プロジェクトは毎回新しいコピーである。
+
+| 環境 | 行なし | 行を足した対照 |
+| --- | --- | --- |
+| 空 | 失敗（41 秒） | 成功（163 秒） |
+| 更新の前の main のキャッシュ | 失敗（13 秒） | 成功（80、108 秒） |
+| 更新後のビルドを検証なしで通した環境（子がキャッシュにある） | 失敗（9 秒） | 成功（26 秒） |
+| 再生成に使った環境 | 失敗（8 秒） | 未実行 |
+
+失敗のメッセージはどれも同じである。
+
+```text
+One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc-jdk18on-bom:1.80.2) from repository Google
+```
+
+したがって、PR のブランチのキャッシュが main に書かれない条件は、この問題の検出には必要なかった。
+
+### キャッシュの中の改ざん
+
+更新の前の main のキャッシュで、ファイルの 1 byte を変えて `./gradlew build` を実行した。対照の同じキャッシュは成功する。
+
+| 対象 | 更新時刻 | 結果 |
+| --- | --- | --- |
+| `kotlin-stdlib-2.4.21.jar`（署名で検証） | 変える | 失敗（`failed verification`） |
+| 同上 | 保つ | 失敗（`failed verification`） |
+| `core-common-2.2.0.jar`（ハッシュで検証） | 変える | 失敗（`failed verification`） |
+| 同上 | 保つ | 失敗（`failed verification`） |
+| `caches/9.7.1/transforms` の `instrumented-tink-1.7.0.jar` | 保つ | 成功。`The contents of the immutable workspace ... have been modified` の警告が出る |
+| `distributionSha256Sum` を壊す（配布物はキャッシュにある） | - | 成功（検証されない） |
+
+`modules-2` の依存はキャッシュの中でも検証の対象のままである。transforms の変更は警告が出たが、変更後のファイルが使われたかは確認していない。配布物の検証が飛ぶことは、上の「検証結果」と同じである。
+
+### 実行時間
+
+同じ入力の `./gradlew build` を手元で交互に 3 回ずつ実行した。入力が同じなので、ビルドキャッシュの効果を含む上限に近い値である。
+
+| 条件 | 時間 | タスク |
+| --- | --- | --- |
+| キャッシュなし | 159、160、162 秒 | 236 実行、29 from cache |
+| キャッシュあり | 22、21、22 秒 | 144 実行、121 from cache |
+
+`caches` と `wrapper` は 1.5 GB、gzip の最速の設定で約 900 MB である。
+
+### provider の選択
+
+`cache-provider: basic` を使う。判断の軸は、公開と private を問わず使えることである。
+
+| 項目 | basic | enhanced（既定） |
+| --- | --- | --- |
+| [ライセンス](https://github.com/gradle/actions/blob/v6.4.1/DISTRIBUTION.md) | MIT | 独自。Gradle Technologies Terms of Use に従う |
+| public のリポジトリ | 無料 | 無料 |
+| private のリポジトリ | 無料 | Free Preview。大規模な商用の利用に課金を導入する予定で、上限は未定 |
+| ソース | 公開 | 非公開。読んで確かめられない |
+| キャッシュのキー | ビルドファイルの hash。restore keys なし | job と commit。restore keys で近い entry を復元する |
+| ビルドファイルが変わる実行 | 空の状態から始まる | main の entry から始まる |
+| `.setup-gradle` | 保存しない（`caches` と `wrapper` だけ） | 未確認 |
+
+basic の[キー](https://github.com/gradle/actions/blob/v6.4.1/sources/src/cache-service-basic.ts)には `**/*.gradle*`、`**/gradle-wrapper.properties`、`gradle/*.versions.toml` が入る。このことは検証に有利に働く。
+
+- `distributionUrl` か `distributionSha256Sum` を変える PR はキーが変わり、配布物をダウンロードして検証する。上の表の「`distributionSha256Sum` を壊す」は、basic では起きない
+- カタログを変える Dependabot の PR も空の状態から始まり、空の環境の `verify` と同じになる
+
+代償として、依存を更新する PR は速くならない。速くなるのは、ビルドファイルを変えない PR と main の実行である。`gradle.lockfile` と `gradle/verification-metadata.xml` はキーに入らないので、これらだけを変える PR はキャッシュを使う。その場合も上の結果のとおり、不足は検出される。
+
+### wrapper validation との重複
+
+`setup-gradle` の `validate-wrappers` の既定は `true` なので、そのままでは検証が重複する。`validate-wrappers: false` にして、専用の `wrapper-validation` の step を残す。理由は次のとおりである。
+
+- `setup-gradle` の検証は[キャッシュの中の `.setup-gradle/valid-wrappers.json`](https://github.com/gradle/actions/blob/v6.4.1/sources/src/wrapper-validation/cache.ts) を検証済みの値として使う。専用の Action はこのファイルを読まない。basic ではこのファイルは復元されないので今は影響しないが、provider を変えると検証の意味が変わる
+- 専用の Action は `min-wrapper-count` の既定が 1 で、jar が見つからないと失敗する。`setup-gradle` の検証にこの条件はない
+- 再生成のジョブも専用の Action を使っているので、同じ形にそろう
+
+`ci.yml` は専用の step を JDK の設定より前に置いたままにする。
 
 ## Consequences
 
-- 配布物と `gradle-wrapper.jar` の検証が CI で毎回実行される
-- CI のキャッシュを導入するときは、`~/.gradle/wrapper` が復元されないことを確認する必要がある
+- `gradle-wrapper.jar` の検証は CI で毎回実行される。配布物の検証は、キャッシュのキーが変わった実行だけで実行される
+- default branch の CI とキャッシュを信頼の前提に含める。default branch の実行が侵害されると、配布物とビルドキャッシュの内容は検証されない
+- 依存を更新しない PR の CI は速くなる。依存を更新する PR は basic ではこれまでと同じである
 - 開発者の環境ではダウンロード済みの配布物は再検証されない
 - wrapper validation を必須チェックにしないと、失敗した PR を merge できる
+
+## 未確認
+
+- `setup-gradle` は実際の Actions で動かしていない。`ci.yml` の変更は案で、キーの動作、read-only の動作、`caches` の復元の結果は手元の再現と実装の読み取りによる
+- `setup-gradle` が Gradle User Home に足す init script と依存検証の組み合わせは確認していない
+- 手元の時間は macOS、`--no-daemon` の値で、GitHub の runner の値ではない。cache の復元と保存の時間は含まない
+- enhanced provider の `valid-wrappers.json` の扱いと、復元の範囲は確認していない
+- transforms の変更が検知の後に使われるかは確認していない。`caches/build-cache-1` と `kotlin-dsl` の改ざんは試していない

@@ -101,7 +101,7 @@ Gradle の更新は `groups` で 1 つの PR にする。全ての PR が同じ 
 
 `[dependabot skip]` を再生成コミットに付ける。[公式](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/managing-pull-requests-for-dependency-updates)によれば、Dependabot は追加コミットのある PR の rebase を止めるが、この文字列があれば force-push で上書きする。PR #3 では、`main` との間にコンフリクトを作って Dependabot のジョブを起動すると、再生成コミットを捨てて PR を作り直し、その `synchronize` で再生成が自動で再開した。Dependabot がコミットを捨てても、信頼の判断は次の再生成コミットで同じように確認できる。
 
-コンフリクトを作っただけでは Dependabot のジョブは起動しなかった。15 分待っても run がなく、`dependabot.yml` の変更で起動した。実際の運用では、次の定期実行か `@dependabot rebase` まで待つ可能性がある。PR #1 は同じジョブの後も `CONFLICTING` のままだったが、`[dependabot skip]` なしのコミットがあることに加えて、グループ化で個別の更新の対象外になっているので、原因は切り分けられていない。
+コンフリクトを作っただけでは Dependabot のジョブは起動しなかった。15 分待っても run がなく、`dependabot.yml` の変更で起動した。実際の運用では、次の定期実行か `@dependabot recreate` まで待つ可能性がある。PR #1 は同じジョブの後も `CONFLICTING` のままだったが、`[dependabot skip]` なしのコミットがあることに加えて、グループ化で個別の更新の対象外になっているので、原因は切り分けられていない。
 
 cooldown は 7 日に設定するが、Google Maven のプラグインには効かない。公開から 2 日の AGP 9.5.0 が提案された。ログは `Using POM Last-Modified fallback release dates for com.android.application from https://plugins.gradle.org/m2` と `Filtered out 0 version(s) due to cooldown` を出している。Plugin Portal は Maven Central へ 303 でリダイレクトし、Central は 404 を返すが、その応答に `Last-Modified: Sat, 11 Oct 2025` が付いている。[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/package/version_release_date_fallback_fetcher.rb)は status を確認せずにこの値を公開日として使う。ライブラリの除外は公開日に関係しない。結果と対処は「cooldown と Google Maven のライブラリ」に書く。
 
@@ -725,7 +725,24 @@ head は [5258a71](https://github.com/appachan/android-supply-chain-lab/commit/5
 
 [PR #1](https://github.com/appachan/android-supply-chain-lab/pull/1) は `[dependabot skip]` のない再生成のコミットがあるので、`@dependabot rebase` は `edited by someone other than Dependabot` で断られた。`@dependabot recreate` では、`Looks like com.android.application is updatable in another way, so this is no longer needed.` として Dependabot が close した。グループの更新があるので、個別の PR は作り直されない。
 
-`[dependabot skip]` のある再生成のコミットを持つ [PR #13](https://github.com/appachan/android-supply-chain-lab/pull/13) では、`@dependabot rebase` の 1 回目は `Looks like this PR is already up-to-date with main!` と返された。main を進めた後の 2 回目は 20 分以上反応がなく、Dependabot のジョブも起動しなかった。再生成のコミットが rebase でどう扱われるかは分かっていない。
+`[dependabot skip]` のある再生成のコミットを持つ [PR #13](https://github.com/appachan/android-supply-chain-lab/pull/13) では、`@dependabot rebase` の 1 回目は `Looks like this PR is already up-to-date with main!` と返された。main を進めた後の 2 回目は 20 分以上反応がなく、Dependabot のジョブも起動しなかった。
+
+README の Dependabot の手順を PR #13 で試した。[PR #20](https://github.com/appachan/android-supply-chain-lab/pull/20) で `bc-jdk18on-bom-1.80.2.pom` の行を main に足した後（使われない行のある `verify` は成功）、PR #13 は `DIRTY` だった。
+
+| 時刻（UTC） | 操作と結果 |
+| --- | --- |
+| 01:14:03 | `@dependabot rebase`。30 分待ったが、コメント、head の変化、Dependabot のジョブのいずれもなかった |
+| 01:44:31 | `@dependabot recreate`。Dependabot のコメントはない |
+| 01:44:41 | Dependabot のジョブ（[run 41262342144](https://github.com/appachan/android-supply-chain-lab/actions/runs/41262342144)）が開始 |
+| 01:46:48 | head が 35ae0ef に変わり、再生成のコミットは捨てられた。[`CI`](https://github.com/appachan/android-supply-chain-lab/actions/runs/41262489088) は metadata にない `gradle-kotlin-dsl` の POM で失敗。再生成の前なので想定どおりである |
+| 01:51:12 | [`Regenerate`](https://github.com/appachan/android-supply-chain-lab/actions/runs/41262489076) が `gradlew` の 1 回の実行（4 分 14 秒）で成功 |
+| 01:51:20 | [`Commit verification metadata`](https://github.com/appachan/android-supply-chain-lab/actions/runs/41262789638) が成功し、3a36e70 を作成（`verified: true`、metadata は +8 行）。手で足した行は `origin` と `reason` を含めて main と同じ内容で残った |
+| 01:52:15 | `CI` の run の Approve で [`verify`](https://github.com/appachan/android-supply-chain-lab/actions/runs/41262808865) が成功。`mergeStateStatus` は `UNSTABLE` のままだった |
+| 01:57:08 | `Regenerate verification metadata` の [run](https://github.com/appachan/android-supply-chain-lab/actions/runs/41262808863) の Approve で再実行が成功し、`CLEAN` になった。新しいコミットはできず、head は 3a36e70 のままだった |
+
+Approve は Actions の画面のほか、`gh api -X POST repos/<owner>/<repo>/actions/runs/<run id>/approve` でも実行でき、run ごとに必要である。`UNSTABLE` の原因は、未承認の run の `action_required` の check suite である。必須チェックの `verify` は成功していた。
+
+`@dependabot rebase` の命令にコメントの接頭辞はなかったので、文面は無反応の原因ではない。[公式](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/managing-pull-requests-for-dependency-updates)の記述と違い、再生成のコミットがある PR で rebase が動いた例は lab にない。無反応の原因は分かっていない。`@dependabot recreate` は PR の commit をすべて作り直すので、再生成と Approve もやり直しになる。PR #1 のようにグループの更新で置き換えられる個別の PR は、作り直されずに close される。
 
 ### ruleset の下での判定
 
@@ -795,7 +812,7 @@ Dependabot の PR の確認:
 5. wrapper の更新があれば、`gradlew` と `gradlew.bat` の diff を確認する。Gradle の更新の PR は、merge の前に Android Studio で sync する。Gradle の更新で鍵や Groovy の取得元が変わると、CI は成功して sync だけが失敗するためである
 6. `Rejected` で `Commit` が失敗したときは merge しない。原因を調べるまで再生成しない
 7. `verify` が `.pom` で失敗したら、README の「検証が POM で失敗したとき」の手順で行を足す
-8. 再生成のコミットがある PR では、Approve workflows to run を押して `pull_request` の `verify` を実行する。手動で起動した `verify` は必須チェックを満たさない
+8. 再生成のコミットがある PR では、Approve workflows to run を押して `pull_request` の `CI` と `Regenerate verification metadata` を実行する。手動で起動した `verify` は必須チェックを満たさない。`Regenerate verification metadata` が未承認だと `mergeStateStatus` は `UNSTABLE` のままになる
 9. `verify` の成功と `mergeStateStatus` の `CLEAN` を確認して merge する
 
 `Regenerate` が失敗したときは、更新そのものがビルドできないので人が判断する。
@@ -854,9 +871,10 @@ rss-reader は読むだけで、まだ適用していない。
 
 - Dependabot の公開日の取得が Google Maven で最新の 1 バージョンに限られる原因は、ログからの判断で、実装では確認していない
 - `Exported 0 keys` の原因は確認していない
-- 1 回の実行の運用は、実際の Dependabot の PR で試していない。行を足す PR の merge の後の `@dependabot rebase` が動くかは未確認で、以前の PR #13 では 2 回目の依頼に反応がなかった
+- 1 回の実行の運用を確かめたのは PR #13 の 1 件だけである。バージョンが変わる更新で行が足りなくなる頻度は分からない
+- PR #13 は Gradle 9.8.2 の更新を含む。Gradle 9.8.2 で `bc-jdk18on-bom` の行がなければ `verify` が失敗するかは確かめていない。失敗を確かめたのは Gradle 9.7.1 である
 - `gradle-*-src.zip` が取得される条件は特定できていない
-- `[dependabot skip]` のあるコミットでの `@dependabot rebase` の結果は確認できていない。main を進めた後のコメントに Dependabot が反応しなかった
+- `[dependabot skip]` のあるコミットでの `@dependabot rebase` が反応しない原因は分かっていない。PR #13 で 2 回、20 分以上と 30 分待ったが、Dependabot のジョブは起動しなかった
 - ruleset の下で再生成のコミットを実際に merge してはいない。`mergeStateStatus` の `CLEAN` までの確認である
 - `pull_request` の承認待ちの実行を REST API で承認できるかは確認していない。GitHub App の token に変えて承認を避けるかは判断していない
 - Kotlin の互換性の範囲を超える提案を `ignore` で止めるかは、rss-reader の適用のときに決める

@@ -9,10 +9,7 @@ permissions:
 jobs:
   # 取得と再生成のジョブを分ける。同じジョブの step の分離では、依存のコードから token を読める
   fetch-library:
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'dependabot/gradle/')
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,6 +58,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-provider: basic
+          cache-read-only: true
+          validate-wrappers: false
 
       # 検証なしで新しい依存のコードを実行するので、このジョブには書き込み権限を渡さない
       # 理由は docs/adr/0002-dependency-verification.md を参照

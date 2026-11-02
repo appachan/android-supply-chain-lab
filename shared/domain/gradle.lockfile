@@ -2,6 +2,8 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :shared:domain:dependencies --write-locks
+com.squareup.okio:okio-jvm:3.18.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+com.squareup.okio:okio:3.18.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.jetbrains.kotlin:kotlin-stdlib:2.4.21=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.jetbrains:annotations:13.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 empty=

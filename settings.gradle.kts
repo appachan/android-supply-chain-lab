@@ -37,9 +37,14 @@ dependencyResolutionManagement {
                     if (libRepositoryDirectory.isPresent) {
                         setUrl(libRepositoryDirectory.get())
                     } else {
+                        // credentials(PasswordCredentials::class) を使うと、認証情報がないときに Gradle がビルドの開始時に止まり、lib を使わないタスクも実行できない
+                        // version catalog の取り込みが settings の repository の認証情報を評価するためである
+                        // Dependabot は GitHub Packages の認証情報なしで、lockfile の更新のために Gradle を実行する
+                        // Dependabot、fork の PR、token を持たない clone でもビルドを動かすため、同じ名前のプロパティを自前で読む
+                        // 認証情報がないときは、lib を取得する時点で Username must not be null! や 401 などで失敗する
                         credentials {
-                            username = providers.environmentVariable("GITHUB_ACTOR").orNull
-                            password = providers.environmentVariable("GITHUB_TOKEN").orNull
+                            username = providers.gradleProperty("GitHubPackagesUsername").orNull
+                            password = providers.gradleProperty("GitHubPackagesPassword").orNull
                         }
                     }
                 }

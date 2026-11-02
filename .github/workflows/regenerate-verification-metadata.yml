@@ -9,10 +9,7 @@ permissions:
 jobs:
   # 取得と再生成のジョブを分ける。同じジョブの step の分離では、依存のコードから token を読める
   fetch-library:
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'dependabot/gradle/')
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -75,6 +72,9 @@ jobs:
         with:
           name: library-repository
           path: ${{ runner.temp }}/library-repository
+
+      - name: Break one library signature
+        run: python3 -I .github/scripts/tmp_tamper.py breakasc "$RUNNER_TEMP/library-repository/com/github/appachan/android-supply-chain-lab-lib/0.4.0/android-supply-chain-lab-lib-0.4.0.aar.asc"
 
       # 公式の 2 段階。sha256 が全成果物のハッシュを書き、pgp,sha256 が鍵の信頼を足す
       # --write-locks は 1 段階目に必要である。なければ新しいバージョンがロックで解決できない

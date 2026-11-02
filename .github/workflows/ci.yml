@@ -38,5 +38,6 @@ jobs:
 
       - name: Build and unit tests
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          ORG_GRADLE_PROJECT_GitHubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_GitHubPackagesPassword: ${{ github.token }}
         run: ./gradlew build

@@ -9,10 +9,7 @@ permissions:
 jobs:
   # 取得と再生成のジョブを分ける。同じジョブの step の分離では、依存のコードから token を読める
   fetch-library:
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'dependabot/gradle/')
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read

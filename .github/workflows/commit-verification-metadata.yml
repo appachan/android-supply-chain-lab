@@ -40,7 +40,7 @@ jobs:
       # 再生成は既存のハッシュとの不一致でも署名の失敗でも止まらず、metadata に書いて続ける。ここで止める
       - name: Reject accepted verification failures
         run: |
-          if grep -qE 'also-trust|verification failed' "$RUNNER_TEMP/regenerated/gradle/verification-metadata.xml"; then
+          if grep -qE '<also-trust|<ignored-key' "$RUNNER_TEMP/regenerated/gradle/verification-metadata.xml"; then
             echo "::error::Regeneration accepted an artifact that failed verification"
             exit 1
           fi

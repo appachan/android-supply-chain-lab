@@ -9,10 +9,7 @@ permissions:
 jobs:
   # 取得と再生成のジョブを分ける。同じジョブの step の分離では、依存のコードから token を読める
   fetch-library:
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'dependabot/gradle/')
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -89,3 +86,79 @@ jobs:
             gradle/verification-keyring.keys
             **/gradle.lockfile
           if-no-files-found: error
+
+  commit:
+    needs: regenerate
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_BRANCH: ${{ github.head_ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      # workflow_run は main の定義で動く。PR のコードは checkout も実行もしない
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # artifact は検証なしで依存を実行したジョブの出力なので、信頼しないデータとして扱う
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verification-metadata
+          path: ${{ runner.temp }}/regenerated
+
+      # 再生成は既存のハッシュとの不一致でも署名の失敗でも止まらず、metadata に書いて続ける。ここで止める
+      - name: Reject accepted verification failures
+        run: |
+          if grep -qE 'also-trust|verification failed' "$RUNNER_TEMP/regenerated/gradle/verification-metadata.xml"; then
+            echo "::error::Regeneration accepted an artifact that failed verification"
+            exit 1
+          fi
+
+      # lockfile は PR に既にあるものだけを受け取る。Dependabot の PR は module を増やさない
+      - name: Compare with the pull request
+        id: compare
+        run: |
+          {
+            echo gradle/verification-metadata.xml
+            echo gradle/verification-keyring.keys
+            gh api "repos/$GITHUB_REPOSITORY/git/trees/$HEAD_SHA?recursive=1" \
+              --jq '.tree[].path | select(test("(^|/)gradle[.]lockfile$"))'
+          } > "$RUNNER_TEMP/files"
+          for file in $(cat "$RUNNER_TEMP/files"); do
+            mkdir -p "$RUNNER_TEMP/current/$(dirname "$file")"
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/$file?ref=$HEAD_SHA" > "$RUNNER_TEMP/current/$file"
+          done
+          if diff -rq "$RUNNER_TEMP/current" "$RUNNER_TEMP/regenerated"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # API 経由のコミットは GitHub が署名する。expectedHeadOid で再生成後に更新されたブランチへの書き込みを防ぐ
+      # [dependabot skip] がないと、Dependabot はこのコミットのある PR を rebase しなくなる
+      - name: Commit through the API
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          for file in $(cat "$RUNNER_TEMP/files"); do
+            jq -n --arg path "$file" --rawfile contents <(base64 -w0 "$RUNNER_TEMP/regenerated/$file") \
+              '{path: $path, contents: $contents}'
+          done > "$RUNNER_TEMP/additions.json"
+          jq -n \
+            --arg query 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }' \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --slurpfile additions "$RUNNER_TEMP/additions.json" \
+            '{query: $query, variables: {input: {
+              branch: {repositoryNameWithOwner: $repo, branchName: env.HEAD_BRANCH},
+              expectedHeadOid: env.HEAD_SHA,
+              message: {headline: ":lock: Regenerate dependency verification metadata and locks", body: "[dependabot skip]"},
+              fileChanges: {additions: $additions}
+            }}}' | gh api graphql --input -
+
+      # GITHUB_TOKEN のコミットでは CI が自動で実行されないので、workflow_dispatch で実行する
+      - name: Run CI on the new commit
+        if: steps.compare.outputs.changed == 'true'
+        run: gh workflow run ci.yml --ref "$HEAD_BRANCH"

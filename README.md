@@ -62,13 +62,15 @@ token がないと `Username must not be null!` で失敗する。Actions の CI
 3. 空の `GRADLE_USER_HOME` で再生成する
 
    ```sh
-   GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+   home="$(mktemp -d)"
+   GRADLE_USER_HOME="$home" ./gradlew --write-verification-metadata sha256 --write-locks build
+   GRADLE_USER_HOME="$home" ./gradlew --write-verification-metadata pgp,sha256 --export-keys build
    ```
 
    空の環境を使うのは、キャッシュがあると不要な行が入るためである。実測で、`build` の後のキャッシュでは 24 行、普段の `GRADLE_USER_HOME` では 44 行増えた。[gradle/gradle#19228](https://github.com/gradle/gradle/issues/19228) には、キャッシュがあると親や BOM の行が書かれないという報告もある（lab では未再現）。親や BOM の POM の行が足りないときは、`verify` が対象のファイルを示して失敗する。「検証が POM で失敗したとき」の手順で行を足す
 
 4. Android Studio の sync が通ることを確かめる
-5. 差分で、増えた鍵と group の範囲を確かめる。`com.github.appachan:android-supply-chain-lab-lib` のバージョンを手で変えたときは、ADR-0002 の「GitHub Packages のライブラリ」の手順で `sha256` も足す。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
+5. 差分で、増えた鍵と group の範囲を確かめる。再生成は鍵の信頼を group の単位にまとめることがある。例えば okhttp を足すと、`com.squareup` 全体を信頼する行が増える
 6. PR を出す
 
 ## 検証が POM で失敗したとき

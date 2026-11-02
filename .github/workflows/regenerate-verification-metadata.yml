@@ -63,19 +63,21 @@ jobs:
           java-version: '17'
 
       # 検証なしで新しい依存のコードを実行するので、このジョブには書き込み権限を渡さない
-      # 親や BOM の POM の行は 1 回の実行で足りないことがある。そのときは verify が失敗するので人が行を足す
       # 理由は docs/adr/0002-dependency-verification.md を参照
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: library-repository
           path: ${{ runner.temp }}/library-repository
 
+      # 公式の 2 段階。sha256 が全成果物のハッシュを書き、pgp,sha256 が鍵の信頼を足す
+      # --write-locks は 1 段階目に必要である。なければ新しいバージョンがロックで解決できない
       - name: Regenerate
-        run: >-
-          ./gradlew -PlibRepositoryDirectory="file://$RUNNER_TEMP/library-repository"
-          --write-verification-metadata pgp,sha256 --export-keys --write-locks build
+        run: |
+          ./gradlew -PlibRepositoryDirectory="file://$RUNNER_TEMP/library-repository" \
+            --write-verification-metadata sha256 --write-locks build
+          ./gradlew -PlibRepositoryDirectory="file://$RUNNER_TEMP/library-repository" \
+            --write-verification-metadata pgp,sha256 --export-keys build
 
-      # 再生成は既存のハッシュとの不一致で止まらない。不一致はここで止める
       - name: Verify in the same environment
         run: ./gradlew -PlibRepositoryDirectory="file://$RUNNER_TEMP/library-repository" build
 

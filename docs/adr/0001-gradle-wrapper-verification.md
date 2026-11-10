@@ -24,7 +24,9 @@ Gradle wrapper には、ビルドの最初に実行されるものが 2 つあ�
 
 CI の `verify` ジョブでは、`gradle/actions/setup-gradle` の `cache-provider: basic` で Gradle User Home をキャッシュする。`distributionSha256Sum` はダウンロードのときにしか検証されないので、配布物がキャッシュから復元されると検証が実行されない。この事実は変わらない。それでも、default branch で検証されたものを使うという前提で許容する。一般のプロジェクトはキャッシュを使うので、キャッシュなしでしか成り立たないプラクティスでは意味がないからである。詳細は「CI のキャッシュ」に書く。
 
-再生成のジョブには `setup-gradle` を入れない。再生成には空の環境が要る（[ADR-0002](0002-dependency-verification.md)）。
+`Regenerate verification metadata` のジョブにも `setup-gradle` を入れる（2026-11-02）。`pull_request` では `cache-read-only` の既定が `true` なので書き込まない。bump では catalog が変わりキャッシュのキーが一致しないので、復元されるのは差分のない再実行だけである（[ADR-0002](0002-dependency-verification.md)）。
+
+当時の判断（2026-11-01）: 再生成には空の環境が要るとして、`Regenerate verification metadata` には `setup-gradle` を入れなかった。公式の 2 段階に変えた後、キャッシュのある環境の 2 段階の結果が Actions の結果と byte 単位で同じだったので、入れることにした。
 
 ## 何を守り、何を守らないか
 
@@ -54,16 +56,16 @@ wrapper validation Action が守るもの:
 
 wrapper validation Action が守らないもの:
 
-- `gradle-wrapper.jar` と `distributionUrl` の版の一致。公式リリースのどれかに一致すれば通るので、古い公式の jar への差し替えは検知しない
+- `gradle-wrapper.jar` と `distributionUrl` のバージョンの一致。公式リリースのどれかに一致すれば通るので、古い公式の jar への差し替えは検知しない
 - `gradlew`、`gradlew.bat`、`gradle-wrapper.properties`。[実装](https://github.com/gradle/actions/blob/v6.4.1/sources/src/wrapper-validation/find.ts)は `gradle-wrapper.jar` だけを対象にする
 - 配布物
 - CI より前の実行。レビュー前のブランチをローカルで `./gradlew` すると、検証の前に jar が実行される
-- PR によるワークフローの変更。`pull_request` は PR 側のワークフローを実行するので、PR の中で検証の step を消せる。必須チェックとレビューの設定が別に必要になる（このタスクではリポジトリ設定を変更しない）
+- PR によるワークフローの変更。`pull_request` は PR 側のワークフローを実行するので、PR の中で検証の step を消せる。必須チェックとレビューの設定が別に必要になる。lab は main の ruleset で `verify` を必須チェックにしている（ADR-0002 の「ruleset の下での判定」）
 - `allow-checksums` と `allow-snapshots` による緩和。このリポジトリでは設定しない
 
 ## Wrapper の更新手順
 
-1. 対象の版の配布物の SHA-256 を [Gradle の公式ページ](https://gradle.org/release-checksums/) で確認する
+1. 対象のバージョンの配布物の SHA-256 を [Gradle の公式ページ](https://gradle.org/release-checksums/) で確認する
 
 2. 確認した値を渡して wrapper タスクを 2 回実行する
 
@@ -74,7 +76,7 @@ wrapper validation Action が守らないもの:
 
    1 回目は実行中の古い Gradle が `gradle-wrapper.properties` だけを新しくする。`gradle-wrapper.jar` は実行中の Gradle のものなので変わらない。2 回目は新しい Gradle が実行され、配布物を `distributionSha256Sum` で検証したうえで `gradle-wrapper.jar` と `gradlew` を更新する。
 
-   `distributionSha256Sum` が設定されていると、値を渡さずに版を変えようとしたときに wrapper タスクは失敗する。古い値が残ることはない。
+   `distributionSha256Sum` が設定されていると、値を渡さずにバージョンを変えようとしたときに wrapper タスクは失敗する。古い値が残ることはない。
 
 3. `gradle-wrapper.jar` の SHA-256 を公式の値と比較する
 
@@ -93,7 +95,7 @@ Dependabot は `package-ecosystem: gradle` で wrapper を更新できる。`dep
 - [GitHub Docs](https://docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories) には、Dependabot が Gradle を実行して `gradle/wrapper/gradle-wrapper.properties`、`gradlew`、`gradlew.bat`、`gradle/wrapper/gradle-wrapper.jar` を更新すると書かれている
 - 同じページに `distributionSha256Sum` への言及はないが、[dependabot-core の実装](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_parser/distributions_finder.rb)は更新の対象にしている。`distributionSha256Sum` がある場合に限り、新しい値を `gradle-distribution-sha256-sum` として [wrapper タスクに渡す](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/file_updater/wrapper/command_builder.rb)。設定がなければ追加しない
 - 新しい値は [`distributionUrl` に `.sha256` を付けた URL から取得する](https://github.com/dependabot/dependabot-core/blob/fdbe8b342118a62ac97da47e824666df11046fec/gradle/lib/dependabot/gradle/package/distributions_fetcher.rb)
-- Dependabot の wrapper タスクの実行は 1 回だが、先に `gradle-wrapper.properties` を新しい版に書き換えているので、新しい Gradle が実行されて `gradle-wrapper.jar` も新しくなる。手元で同じ順序を再現し、9.7.1 から 9.8.2 への更新で jar が 9.8.2 の公式の値になることを確認した
+- Dependabot の wrapper タスクの実行は 1 回だが、先に `gradle-wrapper.properties` を新しいバージョンに書き換えているので、新しい Gradle が実行されて `gradle-wrapper.jar` も新しくなる。手元で同じ順序を再現し、9.7.1 から 9.8.2 への更新で jar が 9.8.2 の公式の値になることを確認した
 - 実例: [9.3.1 から 9.4.1 への更新](https://github.com/ViaVersion/ViaAprilFools/commit/5024475)では `distributionSha256Sum` と `gradle-wrapper.jar` が更新され、jar は 9.4.1 の公式の値と一致した。[9.5.0 から 9.8.2 への更新](https://github.com/jflo/besu-graphql-plugin/pull/4)も jar は 9.8.2 の公式の値と一致した。このリポジトリには `distributionSha256Sum` の設定がなく、更新後も追加されていない
 
 Dependabot の更新でも、次の点は人が判断する。
@@ -130,7 +132,7 @@ GitHub Actions では、一時ブランチに確認用の変更を push して�
 | `gradle-wrapper.jar` の末尾に 1 byte 追加 | 失敗。JDK のセットアップとビルドの step はスキップ | [run 41065550996](https://github.com/appachan/android-supply-chain-lab/actions/runs/41065550996) |
 | 9.8.2 の公式の `gradle-wrapper.jar` に差し替え（`distributionUrl` は 9.7.1 のまま）、`gradlew` にコメントを追加 | 成功。ビルドも成功 | [run 41065666800](https://github.com/appachan/android-supply-chain-lab/actions/runs/41065666800) |
 
-2 つ目の結果は、版の不一致と `gradlew` の変更を Action が検知しないことを示している。
+2 つ目の結果は、バージョンの不一致と `gradlew` の変更を Action が検知しないことを示している。
 
 ```text
 ##[error]At least one Gradle Wrapper Jar failed validation!
@@ -149,7 +151,7 @@ GitHub Actions では、一時ブランチに確認用の変更を push して�
 
 ### 前提の条件
 
-[`cache-read-only`](https://github.com/gradle/actions/blob/v6.4.1/setup-gradle/action.yml) の既定は default branch 以外で `true` である。`pull_request` の cache の scope は merge ref なので、PR が `ci.yml` を書き換えて書き込みを有効にしても、default branch の entry にはならない。
+[`cache-read-only`](https://github.com/gradle/actions/blob/v6.4.1/setup-gradle/action.yml) の既定は `${{ github.event.repository != null && github.ref_name != github.event.repository.default_branch }}` で、default branch 以外では `true` である。`pull_request` の `github.ref_name` は `<番号>/merge` なので `true` になる。`ci.yml` も `regenerate-verification-metadata.yml` も、この既定に頼って `cache-read-only` を書かない。`regenerate-verification-metadata.yml` は一時期 `cache-read-only: true` を明示していたが、`pull_request` でしか動かないので既定と同じであり、削除した。`pull_request` の cache の scope は merge ref なので、PR が `ci.yml` を書き換えて書き込みを有効にしても、default branch の entry にはならない。
 
 「検証された」には次の限定が付く。
 
@@ -191,7 +193,21 @@ One artifact failed verification: bc-jdk18on-bom-1.80.2.pom (org.bouncycastle:bc
 
 `modules-2` の依存はキャッシュの中でも検証の対象のままである。transforms の変更は警告が出たが、変更後のファイルが使われたかは確認していない。配布物の検証が飛ぶことは、上の「検証結果」と同じである。
 
+### Actions での結果
+
+[PR #21](https://github.com/appachan/android-supply-chain-lab/pull/21) と [PR #22](https://github.com/appachan/android-supply-chain-lab/pull/22) の merge の後に確かめた。
+
+| 確認 | 結果 | 実行 |
+| --- | --- | --- |
+| main の CI | キャッシュ約 794 MB を保存 | [run 41268247118](https://github.com/appachan/android-supply-chain-lab/actions/runs/41268247118) |
+| PR の CI | main の entry を復元し、`Build and unit tests` が 3 分 56 秒から 42 秒になった。書き込みはしない | [run 41268596581](https://github.com/appachan/android-supply-chain-lab/actions/runs/41268596581) |
+| `distributionSha256Sum` を変える PR | キーが変わり、配布物をダウンロードして検証で失敗した | [PR #23](https://github.com/appachan/android-supply-chain-lab/pull/23)（確認の後に閉じた） |
+| catalog を変える PR | キーが一致せず、空の状態から始まった（`Basic caching did not find an entry to restore`） | [run 41413580985](https://github.com/appachan/android-supply-chain-lab/actions/runs/41413580985) |
+| catalog を変えない PR | main の entry を復元した（`Entries: 1 restored`） | [run 41412596430](https://github.com/appachan/android-supply-chain-lab/actions/runs/41412596430) |
+
 ### 実行時間
+
+以下は手元の値である。
 
 同じ入力の `./gradlew build` を手元で交互に 3 回ずつ実行した。入力が同じなので、ビルドキャッシュの効果を含む上限に近い値である。
 
@@ -243,7 +259,6 @@ basic の[キー](https://github.com/gradle/actions/blob/v6.4.1/sources/src/cach
 
 ## 未確認
 
-- `setup-gradle` は実際の Actions で動かしていない。`ci.yml` の変更は案で、キーの動作、read-only の動作、`caches` の復元の結果は手元の再現と実装の読み取りによる
 - `setup-gradle` が Gradle User Home に足す init script と依存検証の組み合わせは確認していない
 - 手元の時間は macOS、`--no-daemon` の値で、GitHub の runner の値ではない。cache の復元と保存の時間は含まない
 - enhanced provider の `valid-wrappers.json` の扱いと、復元の範囲は確認していない
